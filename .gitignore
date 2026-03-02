@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+MUJOCO_LOG.TXT
+
+# Trained models (large binary files)
+trained*/
+*.zip
+*.npy
+
+# Recorded videos
+*.mp4
+
+# Tensorboard logs
+tb_logs/
