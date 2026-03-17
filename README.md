@@ -83,7 +83,20 @@ The AI Grand Prix, founded by Anduril in partnership with the Drone Champions Le
   ├── view_vision.py         # FPV + event camera visualization
   ├── train_hpc.slurm        # SLURM job script for HPC training
   └── trained_vision_events/ # Checkpoints, eval logs, TensorBoard
-
+  ## Training Pipeline (Swift-Style Distillation)                                                                             
+                                                                                                                              
+  Training follows a 2-stage privileged-teacher → student approach inspired by Swift (Nature 2023):                           
+                                                                                                                              
+  1. **Stage 1 — State Expert** (`train_state.py`): Train a privileged policy with full 24D state (ground-truth gate          
+  positions, velocity, orientation). Converges in ~20M steps (~2 hours on GPU at 2,500 FPS). This expert completes all 8 gates
+   reliably.                                                                                                                  
+                                                                                                                              
+  2. **Stage 2 — Vision Distillation** (`train_distill.py`): Distill the expert into a vision policy using DAgger. The vision
+  student (48×48 RGB+event camera) learns to imitate the expert's actions while the imitation weight decays, allowing the     
+  policy to fly independently. Warmstarts from any existing vision model. ~50M steps (~2 days on GPU).                   
+                                                                                                                              
+  HPC training runs on FAU's Athene cluster (NVIDIA RTX A4000, SLURM) with auto-resume and auto-resubmit across 6-hour job
+  windows.    
   References
 
   - Swift — Champion-level drone racing (Nature 2023). CTBR action space, domain randomization, sim-to-real transfer
