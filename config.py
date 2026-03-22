@@ -54,8 +54,9 @@ REWARD_GATE_PASSED = 100.0      # large gate bonus
 REWARD_PROGRESS = 10.0          # distance progress toward gate
 REWARD_PERCEPTION = -0.5        # penalty when drone can't "see" gate (too far off axis)
 REWARD_CMD_SMOOTHNESS = -0.02   # penalty for jerky commands
-REWARD_CRASH_PENALTY = -50.0    # collision/out-of-bounds
+REWARD_CRASH_PENALTY = -200.0   # heavy crash penalty (prioritize safety)
 REWARD_BODY_RATE_PENALTY = -0.01  # penalty for high body rates (encourages smooth flight)
+REWARD_TIME_PENALTY = -0.1        # per-step penalty to incentivize speed (no loitering)
 
 # --- Track ---
 GATE_WIDTH = 1.5          # meters (MultiGP standard)
@@ -76,6 +77,42 @@ OBS_NOISE_ANGVEL = 0.05           # rad/s, gyro noise
 OBS_NOISE_GATE_POS = 0.15         # m, gate position detection noise (CNN + projection)
 OBS_NOISE_GATE_YAW = 0.05         # rad, gate yaw detection noise (~3 deg)
 OBS_DELAY_STEPS = (0, 2)          # observation pipeline latency (camera + processing)
+
+# --- FPV Camera (vision-based racing) ---
+FPV_RESOLUTION = 48           # 48x48 pixels (smaller = faster rendering + CNN)
+FPV_FOV = 90                  # degrees, typical racing camera FOV
+FPV_TILT_DEG = -10            # degrees, camera tilted down (typical FPV mount)
+FPV_FRAME_STACK = 2           # number of stacked frames (2 = enough temporal info, 3.5x less CNN data)
+VISION_STATE_DIM = 19         # 6D rotation(6) + vio_velocity(3) + vio_angular_rates(3) + prev_action(4) + vio_position(3)
+
+# --- Motion blur (from event-sharp-nerf-drones, Zou et al. 2026) ---
+# At high speed, FPV frames are motion-blurred. Simulating this forces
+# the CNN to be robust, matching real deployment conditions.
+MOTION_BLUR_SAMPLES = 3       # sub-exposure renders averaged (1=no blur, 3=mild, 5=heavy)
+MOTION_BLUR_WARMUP = 50_000   # timesteps before enabling blur (staged training)
+
+# --- Event camera (from event-sharp-nerf-drones, Zou et al. 2026) ---
+# Simulates a co-located event camera that fires per-pixel events when
+# log-luminance changes exceed a contrast threshold C.
+# At high speed, RGB frames blur but events remain sharp — giving the
+# agent usable perception when the standard camera fails.
+EVENT_CAMERA_ENABLED = True
+EVENT_CONTRAST_THRESHOLD_POS = 0.2    # C+ positive contrast threshold (log-luminance)
+EVENT_CONTRAST_THRESHOLD_NEG = 0.2    # C- negative contrast threshold
+EVENT_CONTRAST_NOISE = 0.03           # std of per-event threshold noise (realism)
+EVENT_REFRACTORY_PERIOD = 1e-4        # seconds, minimum time between events at same pixel
+EVENT_FRAME_BINS = 2                  # temporal bins for event representation (pos/neg per bin)
+EVENT_WARMUP = 0                      # timesteps before enabling events (0=always on)
+
+# --- VIO/IMU noise (simulates Visual-Inertial Odometry estimation errors) ---
+# Based on typical MEMS IMU + stereo/mono VIO pipeline (Swift, Nature 2023)
+VIO_GYRO_BIAS_INSTABILITY = 0.003   # rad/s, gyro bias random walk
+VIO_GYRO_WHITE_NOISE = 0.01        # rad/s, gyro measurement noise
+VIO_ACCEL_BIAS = 0.02              # m/s², accelerometer bias
+VIO_ACCEL_NOISE = 0.05             # m/s², accelerometer measurement noise
+VIO_VEL_DRIFT_RATE = 0.02          # m/s per second, velocity estimate drift
+VIO_POS_DRIFT_RATE = 0.05          # m per second, position estimate drift
+VIO_UPDATE_RATE = 30               # Hz, visual correction rate (camera-rate)
 
 # --- Domain randomization (for sim-to-real transfer) ---
 DOMAIN_RAND = True
