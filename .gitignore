@@ -15,3 +15,12 @@ trained*/
 
 # Tensorboard logs
 tb_logs/
+
+# Snapshots/images
+*.png
+
+# macOS
+.DS_Store
+
+# Temp/debug
+train_events.log
