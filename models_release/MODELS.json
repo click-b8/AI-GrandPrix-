@@ -1,0 +1,52 @@
+{
+  "release_date": "2026-03-26",
+  "models": {
+    "aigp_8gates_final.zip": {
+      "name": "8-Gate Racer",
+      "type": "state-based",
+      "vision": false,
+      "description": "Specialized 8-gate racer starting from 5-gate base. Optimized for aggressive banking (120\u00b0 roll limit) and progressive gate rewards.",
+      "performance": "Fast, aggressive racing",
+      "training_steps": 100000000,
+      "trained_on": "HPC (Mar 24, 2026)"
+    },
+    "aigp_racer_final.zip": {
+      "name": "Swift Racer (100M Extended)",
+      "type": "state-based",
+      "vision": false,
+      "description": "Extended training of Swift baseline to 100M steps. Highly tuned for maximum performance.",
+      "performance": "Championship-level racing",
+      "training_steps": 100000000,
+      "trained_on": "HPC (Feb 23, 2026)"
+    },
+    "aigp_distill_final.zip": {
+      "name": "Vision Policy (Distilled)",
+      "type": "vision-based",
+      "vision": true,
+      "vision_input": "48x48 RGB + event camera (14 channels stacked)",
+      "description": "CNN-based vision policy with FPV + simulated event camera. Trained via distillation from state experts. Suitable for sim-to-real transfer.",
+      "performance": "Realistic perception-based flight",
+      "training_steps": 52000000,
+      "trained_on": "HPC (Mar 12-24, 2026)"
+    }
+  },
+  "usage": {
+    "state_based": {
+      "example": "from stable_baselines3 import PPO\nmodel = PPO.load('aigp_8gates_final.zip')\nobs, _ = env.reset()\naction, _ = model.predict(obs, deterministic=True)",
+      "note": "Use vision_mode=False when creating environment"
+    },
+    "vision_based": {
+      "example": "model = PPO.load('aigp_distill_final.zip')\nenv = DroneRaceEnv(vision_mode=True)\nobs, _ = env.reset()\naction, _ = model.predict(obs, deterministic=True)",
+      "note": "Requires vision_mode=True. Observation is Dict with 'image' and 'state' keys"
+    }
+  },
+  "sim_to_real": {
+    "recommendation": "Use aigp_distill_final.zip for actual drone deployment",
+    "steps": [
+      "1. Test on real drone in safe environment",
+      "2. Fine-tune with domain randomization for hardware variations",
+      "3. Use MuJoCo rendering config to match real camera",
+      "4. Validate against actual flight metrics"
+    ]
+  }
+}
