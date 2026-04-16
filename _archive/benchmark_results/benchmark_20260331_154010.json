@@ -1,0 +1,330 @@
+{
+  "timestamp": "2026-03-31T15:40:07.513188",
+  "laps_per_model": 20,
+  "models": {
+    "8-Gate Racer (state-based)": {
+      "name": "8-Gate Racer (state-based)",
+      "path": "aigp_8gates_final.zip",
+      "vision_mode": false,
+      "laps": [
+        {
+          "lap_num": 1,
+          "gates": 3,
+          "time": 0.0299532413482666,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 2,
+          "gates": 3,
+          "time": 0.028477907180786133,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 3,
+          "gates": 3,
+          "time": 0.028414011001586914,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 4,
+          "gates": 3,
+          "time": 0.02831101417541504,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 5,
+          "gates": 3,
+          "time": 0.028109073638916016,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 6,
+          "gates": 3,
+          "time": 0.028177976608276367,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 7,
+          "gates": 3,
+          "time": 0.027796030044555664,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 8,
+          "gates": 3,
+          "time": 0.027673006057739258,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 9,
+          "gates": 3,
+          "time": 0.027698755264282227,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 10,
+          "gates": 3,
+          "time": 0.02771592140197754,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 11,
+          "gates": 3,
+          "time": 0.027405977249145508,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 12,
+          "gates": 3,
+          "time": 0.027696847915649414,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 13,
+          "gates": 3,
+          "time": 0.027652978897094727,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 14,
+          "gates": 3,
+          "time": 0.027469873428344727,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 15,
+          "gates": 3,
+          "time": 0.02834296226501465,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 16,
+          "gates": 3,
+          "time": 0.027608156204223633,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 17,
+          "gates": 3,
+          "time": 0.027456998825073242,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 18,
+          "gates": 3,
+          "time": 0.02756810188293457,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 19,
+          "gates": 3,
+          "time": 0.027554035186767578,
+          "steps": 224,
+          "success": false
+        },
+        {
+          "lap_num": 20,
+          "gates": 3,
+          "time": 0.027942895889282227,
+          "steps": 224,
+          "success": false
+        }
+      ],
+      "summary": {
+        "avg_gates": 3.0,
+        "std_gates": 0.0,
+        "success_rate_percent": 0.0,
+        "avg_time_seconds": 0.0279512882232666,
+        "std_time_seconds": 0.0005669521252317833,
+        "min_time_seconds": 0.027405977249145508,
+        "max_time_seconds": 0.0299532413482666,
+        "total_laps": 20,
+        "failed_gates_count": 20
+      }
+    },
+    "Swift Racer 100M (state-based)": {
+      "name": "Swift Racer 100M (state-based)",
+      "path": "aigp_racer_final.zip",
+      "vision_mode": false,
+      "laps": [
+        {
+          "lap_num": 1,
+          "gates": 2,
+          "time": 0.019737720489501953,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 2,
+          "gates": 2,
+          "time": 0.019249916076660156,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 3,
+          "gates": 2,
+          "time": 0.01935410499572754,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 4,
+          "gates": 2,
+          "time": 0.01901698112487793,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 5,
+          "gates": 2,
+          "time": 0.019227027893066406,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 6,
+          "gates": 2,
+          "time": 0.01921677589416504,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 7,
+          "gates": 2,
+          "time": 0.019124984741210938,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 8,
+          "gates": 2,
+          "time": 0.019503116607666016,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 9,
+          "gates": 2,
+          "time": 0.019238948822021484,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 10,
+          "gates": 2,
+          "time": 0.019286155700683594,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 11,
+          "gates": 2,
+          "time": 0.019067764282226562,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 12,
+          "gates": 2,
+          "time": 0.019232988357543945,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 13,
+          "gates": 2,
+          "time": 0.019142866134643555,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 14,
+          "gates": 2,
+          "time": 0.01919698715209961,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 15,
+          "gates": 2,
+          "time": 0.019275665283203125,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 16,
+          "gates": 2,
+          "time": 0.018992900848388672,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 17,
+          "gates": 2,
+          "time": 0.0200350284576416,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 18,
+          "gates": 2,
+          "time": 0.019443035125732422,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 19,
+          "gates": 2,
+          "time": 0.0193939208984375,
+          "steps": 156,
+          "success": false
+        },
+        {
+          "lap_num": 20,
+          "gates": 2,
+          "time": 0.01935410499572754,
+          "steps": 156,
+          "success": false
+        }
+      ],
+      "summary": {
+        "avg_gates": 2.0,
+        "std_gates": 0.0,
+        "success_rate_percent": 0.0,
+        "avg_time_seconds": 0.019304549694061278,
+        "std_time_seconds": 0.00023726362717600084,
+        "min_time_seconds": 0.018992900848388672,
+        "max_time_seconds": 0.0200350284576416,
+        "total_laps": 20,
+        "failed_gates_count": 20
+      }
+    },
+    "Vision Policy (vision-based)": {
+      "name": "Vision Policy (vision-based)",
+      "path": "aigp_distill_final.zip",
+      "vision_mode": true,
+      "laps": [],
+      "summary": {},
+      "error": "Error(s) in loading state_dict for MultiInputActorCriticPolicy:\n\tsize mismatch for mlp_extractor.policy_net.0.weight: copying a param with shape torch.Size([128, 256]) from checkpoint, the shape in current model is torch.Size([64, 275]).\n\tsize mismatch for mlp_extractor.policy_net.0.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64]).\n\tsize mismatch for mlp_extractor.policy_net.2.weight: copying a param with shape torch.Size([64, 128]) from checkpoint, the shape in current model is torch.Size([64, 64]).\n\tsize mismatch for mlp_extractor.value_net.0.weight: copying a param with shape torch.Size([128, 256]) from checkpoint, the shape in current model is torch.Size([64, 275]).\n\tsize mismatch for mlp_extractor.value_net.0.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([64]).\n\tsize mismatch for mlp_extractor.value_net.2.weight: copying a param with shape torch.Size([64, 128]) from checkpoint, the shape in current model is torch.Size([64, 64])."
+    }
+  }
+}

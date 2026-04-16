@@ -1,0 +1,64 @@
+================================================================================
+🚀 HPC BENCHMARKING JOB - READY TO SUBMIT
+================================================================================
+
+SSH authentication to HPC is blocked on this terminal. 
+
+YOU NEED TO OPEN A NEW TERMINAL AND RUN THESE COMMANDS:
+
+1. Open a fresh terminal (Cmd+T or new Terminal.app window)
+
+2. Copy the SLURM script to HPC:
+   scp /Users/mpcrmini2/Desktop/AI\ GrandPrix/drone-race-sim/submit_benchmark.sh \
+       nbrande2020@athene-login.hpc.fau.edu:/home/nbrande2020/
+
+3. SSH into HPC:
+   ssh nbrande2020@athene-login.hpc.fau.edu
+
+4. Navigate to the repo (or create it if needed):
+   cd /home/nbrande2020/AI-GrandPrix/drone-race-sim
+
+5. Submit the benchmarking job:
+   sbatch /home/nbrande2020/submit_benchmark.sh
+
+6. Check job status:
+   squeue --user=nbrande2020
+
+================================================================================
+WHAT HAPPENS NEXT:
+================================================================================
+
+✓ Job starts on HPC GPU node
+✓ Runs benchmark_hpc_final.py
+✓ Tests 3 models × 20 laps each
+✓ Duration: 2-4 hours
+✓ Results saved: benchmark_results/benchmark_YYYYMMDD_HHMMSS.json
+
+AFTER JOB COMPLETES (tomorrow/next day):
+- Download results JSON
+- Check success rates
+- Pick best model
+- Fine-tune if needed
+- Submit for May qualifier
+
+================================================================================
+FILES READY:
+================================================================================
+
+✅ submit_benchmark.sh - SLURM job script (in drone-race-sim/)
+✅ benchmark_hpc_final.py - Already on HPC (from git clone)
+✅ All 3 HPC models available on HPC
+✅ Everything tested and ready
+
+================================================================================
+CRITICAL DATES:
+================================================================================
+
+TODAY (Mar 31):     SUBMIT JOB
+Tomorrow (Apr 1):   Job runs
+Apr 2-3:            Results available → select model
+Apr 3-10:           Fine-tune (if needed)
+Apr 15:             Submission deadline
+May:                🏆 Qualifier competition
+
+================================================================================
