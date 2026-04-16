@@ -66,7 +66,7 @@ If using these models in research:
 ```
 @misc{aigrandprix2026,
   title={Autonomous Drone Racing: AI Grand Prix Competition Models},
-  author={[Your Team]},
+  author={[ SCUBA LAB]},
   year={2026},
   url={https://github.com/click-b8/AI-GrandPrix}
 }
