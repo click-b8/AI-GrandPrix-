@@ -14,24 +14,37 @@ from vision_model import DroneVisionExtractor
 
 
 class PolicyNet(nn.Module):
-    """Minimal policy network matching the trained model architecture."""
+    """Policy head mirroring SB3 MultiInputPolicy's mlp_extractor.policy_net + action_net.
+
+    Topology matches the trained checkpoint (drone-race-sim/trained_distilled/policy.pth):
+        mlp_extractor.policy_net.0.weight  (128, 256)  ─► Linear(256, 128)
+                                                           Tanh      (SB3 default activation_fn)
+        mlp_extractor.policy_net.2.weight  (64, 128)   ─► Linear(128, 64)
+                                                           Tanh
+        action_net.weight                  (4, 64)     ─► Linear(64, 4)  (bare linear;
+                                                           Gaussian mean — no squashing here)
+
+    Input is the 256D features extractor output directly. State is NOT re-concatenated:
+    the state MLP is already inside DroneVisionExtractor (64D state features are part of
+    the 256D output). Squashing to action ranges is handled downstream in
+    action_to_dcl_command().
+    """
 
     def __init__(self):
         super().__init__()
-        # Features from DroneVisionExtractor output (256D)
-        # + State (19D) = 275D input
-        self.pi_net = nn.Sequential(
-            nn.Linear(275, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 4),  # 4 continuous actions: [throttle, roll, pitch, yaw]
-            nn.Tanh(),
-        )
+        self.mlp_extractor = nn.ModuleDict({
+            'policy_net': nn.Sequential(
+                nn.Linear(256, 128),
+                nn.Tanh(),
+                nn.Linear(128, 64),
+                nn.Tanh(),
+            ),
+        })
+        self.action_net = nn.Linear(64, 4)
 
-    def forward(self, features, state):
-        x = torch.cat([features, state], dim=-1)
-        return self.pi_net(x)
+    def forward(self, features):
+        latent_pi = self.mlp_extractor['policy_net'](features)
+        return self.action_net(latent_pi)
 
 
 class SCUBALabAdapter:
@@ -78,35 +91,82 @@ class SCUBALabAdapter:
         else:
             self._load_weights(weights_path)
 
-        print(f"[SCUBA Lab] ✓ Model loaded successfully")
+        # Only reached if _load_weights succeeded (strict=True raises on any mismatch).
+        print(f"[SCUBA Lab] ✓ Feature extractor + policy head loaded (strict=True)")
 
     def _load_weights(self, weights_path: str):
-        """Load weights from saved file"""
-        checkpoint = torch.load(weights_path, map_location=self.device)
+        """Load weights from the trained policy.pth with strict=True.
 
-        # Filter weights: only load those that match current architecture
-        feature_dict = {k: v for k, v in checkpoint.items() if k.startswith('features_extractor.')}
-        policy_dict = {k: v for k, v in checkpoint.items() if k.startswith('pi_net.')}
+        The checkpoint is SB3 MultiInputPolicy state: feature-extractor trees are
+        stored under the 'features_extractor.' prefix; the policy head is under
+        'mlp_extractor.policy_net.' and 'action_net.'. We map those into this
+        adapter's two modules (DroneVisionExtractor, PolicyNet) by renaming
+        prefixes, then load each with strict=True so any drift between this
+        adapter's topology and the saved checkpoint fails loudly instead of
+        silently leaving layers at Kaiming init.
 
-        # Rename keys to remove prefix
-        feature_dict = {k.replace('features_extractor.', ''): v for k, v in feature_dict.items()}
-        policy_dict = {k.replace('pi_net.', ''): v for k, v in policy_dict.items()}
+        History: the previous implementation filtered keys with a 'pi_net.' prefix
+        that matched zero checkpoint keys, and called load_state_dict with
+        strict=False inside try/except. Both the filter and the handwritten
+        PolicyNet topology were wrong; the result was a policy head running on
+        PyTorch default random init while the adapter printed a success message.
+        See obsidian/fragilities.md.
+        """
+        checkpoint = torch.load(weights_path, map_location=self.device, weights_only=False)
 
-        # Load with partial matching
-        try:
-            self.feature_extractor.load_state_dict(feature_dict, strict=False)
-            print(f"[SCUBA Lab] Loaded feature extractor weights")
-        except Exception as e:
-            print(f"[SCUBA Lab] Warning: Could not load all feature extractor weights: {e}")
-
-        try:
-            self.policy.load_state_dict(policy_dict, strict=False)
-            print(f"[SCUBA Lab] Loaded policy weights")
-        except Exception as e:
-            print(f"[SCUBA Lab] Warning: Could not load all policy weights: {e}")
-
+        # Feature extractor: SB3 stores shared + per-head copies; all three are
+        # identical in our training, so we load from the shared 'features_extractor.*'.
+        feature_dict = {
+            k.removeprefix('features_extractor.'): v
+            for k, v in checkpoint.items()
+            if k.startswith('features_extractor.')
+        }
+        self.feature_extractor.load_state_dict(feature_dict, strict=True)
         self.feature_extractor.eval()
+
+        # Policy head: combines SB3's mlp_extractor.policy_net (two Linear layers
+        # with Tanh activation between) and action_net (final Linear).
+        policy_dict = {}
+        for k, v in checkpoint.items():
+            if k.startswith('mlp_extractor.policy_net.'):
+                # 'mlp_extractor.policy_net.0.weight' -> 'mlp_extractor.policy_net.0.weight'
+                # Our PolicyNet uses nn.ModuleDict with key 'policy_net', so the
+                # target key matches after stripping no prefix. We keep the same
+                # leading name for symmetry with the checkpoint layout.
+                policy_dict[k] = v
+            elif k.startswith('action_net.'):
+                policy_dict[k] = v
+        self.policy.load_state_dict(policy_dict, strict=True)
         self.policy.eval()
+
+        self._log_weight_statistics()
+
+    def _log_weight_statistics(self):
+        """Log std/mean of each loaded layer after weight load.
+
+        Kaiming-uniform init at fan-in N has std ~= sqrt(2/N) / sqrt(3) ~= sqrt(2/(3N)):
+          fan-in 256 -> ~0.051
+          fan-in 128 -> ~0.072
+          fan-in 64  -> ~0.102
+
+        Trained weights typically deviate meaningfully from these values (either
+        larger, from learning-signal accumulation, or with a clearly non-uniform
+        distribution). If you see post-load stds that land exactly on these
+        numbers, assume the weights did not load (even though we now use
+        strict=True, logging is still useful for spotting future drift).
+        """
+        def stats(t: torch.Tensor) -> str:
+            t = t.detach().float()
+            return (f"shape={tuple(t.shape)} mean={t.mean().item():+.5f} "
+                    f"std={t.std().item():.5f} |max|={t.abs().max().item():.5f}")
+
+        print(f"[SCUBA Lab] Post-load weight statistics:")
+        print(f"  features_extractor.coarse_cnn.0.weight : {stats(self.feature_extractor.coarse_cnn[0].weight)}")
+        print(f"  features_extractor.fine_cnn.0.weight   : {stats(self.feature_extractor.fine_cnn[0].weight)}")
+        print(f"  features_extractor.state_mlp.0.weight  : {stats(self.feature_extractor.state_mlp[0].weight)}")
+        print(f"  policy.mlp_extractor.policy_net.0      : {stats(self.policy.mlp_extractor['policy_net'][0].weight)}")
+        print(f"  policy.mlp_extractor.policy_net.2      : {stats(self.policy.mlp_extractor['policy_net'][2].weight)}")
+        print(f"  policy.action_net.weight               : {stats(self.policy.action_net.weight)}")
 
     def process_observation(self, telemetry: dict, visual_data: np.ndarray) -> tuple:
         """
@@ -172,14 +232,16 @@ class SCUBALabAdapter:
             Action array: [throttle, roll, pitch, yaw]
         """
         with torch.no_grad():
-            # Extract features
+            # State is already embedded inside the 256D feature vector via the
+            # feature extractor's state_mlp branch; the policy head takes features
+            # alone. See PolicyNet docstring.
             obs = {"image": image_tensor, "state": state_tensor}
             features = self.feature_extractor(obs)
+            action = self.policy(features)
 
-            # Get action from policy (features is (batch, 256), state_tensor is (batch, 19))
-            action = self.policy(features, state_tensor)
-
-        # Convert to numpy and clamp to valid ranges
+        # Convert to numpy and clamp to valid ranges. The trained policy outputs
+        # the Gaussian mean (no Tanh) — clipping here enforces the competition
+        # action-space bounds as a safety net.
         action = action.squeeze(0).cpu().numpy()
 
         # Clamp: throttle [0, 1], roll/pitch/yaw [-1, 1]
