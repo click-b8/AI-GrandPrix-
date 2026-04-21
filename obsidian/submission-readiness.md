@@ -133,14 +133,31 @@ date known to us). **Net window:** a few weeks.
 
 ### 10. `FPV_TILT_DEG` drift in `drone-race-sim/config.py`
 
-- **File:** `drone-race-sim/config.py:84`
-- **What:** Uncommitted local edit changed tilt to `0`. Model was
-  trained with `-10`. Affects any local visualization rendered
-  through the subdir's config.
-- **Fix:** revert the local edit (`git -C drone-race-sim checkout -- config.py`)
-  or commit a deliberate value. Root `config.py` is already `-10`.
-- **Effort:** 1 minute.
-- **Status:** ☐
+- **What:** Resolved by deletion on `refactor/deduplicate-root-subdir`
+  (2026-04-21) — the nested copy of `config.py` was removed entirely,
+  so its uncommitted `FPV_TILT_DEG = 0` drift no longer exists.
+  Root's `config.py` (with `-10`) is now the only copy.
+- **Status:** ✅ subdir drift gone. Branch C
+  (`fix/fpv-tilt-canonicalization`) still owns the *empirical*
+  tilt validation — confirm the trained model expects `-10` against
+  a held-out observation before pinning it with an import-time assert.
+
+### Additional item resolved on `refactor/deduplicate-root-subdir` (2026-04-21)
+
+- **Duplicate-file structure (root vs `drone-race-sim/`):** ✅ resolved.
+  Root is now the single source of truth for VQ1-deployment code. All
+  identical duplicates deleted from `drone-race-sim/`; diverged files
+  resolved by root-wins rule; load-bearing files
+  (`test_dcl_adapter.py`, `measure_inference_time.py`,
+  `dcl_mavlink_client.py`, `trained_distilled/`, model zips) moved
+  to root. `.gitignore` amended to track the deployment artifacts.
+  See [[fragilities#Canonical copy of each file]].
+- **`sys.path.insert` hack in `test_dcl_adapter.py`:** ✅ removed with
+  the move to root.
+- **Surfaced during this branch** (new fragility entry): the nested
+  `drone-race-sim/` git repo shares its `origin` remote with the
+  outer repo. Structural footgun. See [[fragilities#Nested repo shares the outer repo's GitHub remote]].
+  Not in scope for VQ1; fix deferred.
 
 ## Safe to defer until after submission
 

@@ -16,7 +16,7 @@ from vision_model import DroneVisionExtractor
 class PolicyNet(nn.Module):
     """Policy head mirroring SB3 MultiInputPolicy's mlp_extractor.policy_net + action_net.
 
-    Topology matches the trained checkpoint (drone-race-sim/trained_distilled/policy.pth):
+    Topology matches the trained checkpoint (trained_distilled/policy.pth):
         mlp_extractor.policy_net.0.weight  (128, 256)  ─► Linear(256, 128)
                                                            Tanh      (SB3 default activation_fn)
         mlp_extractor.policy_net.2.weight  (64, 128)   ─► Linear(128, 64)
