@@ -79,12 +79,12 @@ See [[fragilities#Silent failure chain]].
 | FPV + event camera | `drone_race_env.py` (`EventCameraSensor`, `_render_fpv`) | [[perception]] |
 | VIO simulation | `drone_race_env.py` (`VIOSimulator`) | [[perception#VIO]] |
 | Feature extractor | `vision_model.py` and duplicated in train scripts | [[vision-model]] |
-| Training: state expert | `drone-race-sim/train_state.py` | [[training]] |
-| Training: distillation | `drone-race-sim/train_distill.py` | [[training]] |
+| Training: state expert | `drone-race-sim/train_state.py` (archive) | [[training]] |
+| Training: distillation | `drone-race-sim/train_distill.py` (archive) | [[training]] |
 | Training: end-to-end vision (abandoned) | `train_vision.py` | [[training#The abandoned 200M vision run]] |
 | Deployment adapter | `dcl_adapter.py` | [[deployment]], [[fragilities]] |
 | MAVLink protocol | `dcl_mavlink_adapter.py` | [[deployment]], [[fragilities]] |
-| Competition entry point | `drone-race-sim/dcl_mavlink_client.py` | [[deployment]] |
+| Competition entry point | `dcl_mavlink_client.py` (root; moved 2026-04-21) | [[deployment]] |
 
 ## Pure / side-effectful seams
 
@@ -103,14 +103,32 @@ ties everything together with a zero-placeholder vision frame and a
 broken MAVSDK call; none of the unit-testable layers touch the real
 failure surface.
 
-## Duplicate-file layout (root vs `drone-race-sim/`)
+## Repository layout (root = canonical, `drone-race-sim/` = thin archive)
 
-The repository has two parallel copies of many source files. This is
-the result of a cleanup pass that moved a curated subset up to the
-root but left training scaffolding in the nested subdirectory. The
-subdirectory is **its own git repo** with uncommitted changes. See
-[[fragilities#Canonical copy of each file]] for the per-file mapping
-and for which files are load-bearing but only exist in the subdirectory.
+Since `refactor/deduplicate-root-subdir` (2026-04-21), root holds the
+single canonical copy of every VQ1-deployment file: `dcl_adapter.py`,
+`vision_model.py`, `config.py`, `drone_race_env.py`, `track.py`,
+`race.py`, `dcl_mavlink_adapter.py`, `dcl_mavlink_client.py`,
+`test_dcl_adapter.py`, `measure_inference_time.py`,
+`trained_distilled/`, `models_release/*.zip`, plus the docs.
+
+`drone-race-sim/` is a thinner archive. It retains training scripts
+(`train_state.py`, `train_distill.py`, `train_vision.py`, the `train_*`
+HPC and experimentation variants), historical checkpoint directories
+(`trained_swift_100m/` and the earlier-experiment siblings), HPC
+`.slurm` job scripts, and a long tail of debug/demo/visualization
+utilities that remain useful for archaeology but are not part of the
+deployment package.
+
+Caveat: `drone-race-sim/` is **still its own nested git repo**, with
+its own history and an `origin` remote that happens to point at the
+same GitHub project as the outer repo. Flattening the nested repo is
+deferred post-VQ1, and the shared-remote situation is a known
+footgun documented in
+[[fragilities#Nested repo shares the outer repo's GitHub remote]].
+The nested repo's pre-existing working-tree drift (10 modified
+files, 30+ untracked scripts from past experiments) is also
+explicitly out of scope for the VQ1 branches.
 
 ## See also
 
