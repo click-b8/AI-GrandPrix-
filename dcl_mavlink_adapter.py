@@ -1,289 +1,290 @@
 """
 SCUBA LAB - DCL MAVLink Adapter
-Wraps distilled vision model with MAVLink v2 communication for official competition.
+Bridges trained distilled vision model to DCL competition API via MAVLink v2.
 
-Implements official VADR-TS-001 specification:
-- SET_ATTITUDE_TARGET control interface
-- UDP MAVLink v2 transport
-- Heartbeat and TIMESYNC handling
-- 50-120 Hz command rate (target 100 Hz)
+Implements VADR-TS-001 specification:
+- SET_ATTITUDE_TARGET with IGNORE_ATTITUDE type_mask (body-rate CTBR control)
+- UDP MAVLink v2 transport via pymavlink
+- Heartbeat at 2 Hz, control commands at 50-100 Hz
+- Incrementing sequence byte, correct CRC-16-CCITT per message
+
+Control semantic:
+  Policy outputs [throttle in [0,1], roll in [-1,1], pitch in [-1,1], yaw in [-1,1]]
+  These are CTBR body-rate commands scaled by MAX_BODY_RATE = 12.0 rad/s.
+  Written into SET_ATTITUDE_TARGET body_roll/pitch/yaw_rate fields with
+  type_mask = 0b10000000 = 128 (IGNORE_ATTITUDE), so the flight controller
+  ignores the quaternion and tracks body rates + thrust directly.
+
+Wire format (verified against pymavlink common dialect, msg_id=82, crc_extra=49):
+  Payload 39 bytes (MAVLink native/wire field ordering, largest type first):
+    uint32  time_boot_ms       4 bytes
+    float   q[4]              16 bytes  (identity quaternion; ignored)
+    float   body_roll_rate     4 bytes  rad/s
+    float   body_pitch_rate    4 bytes  rad/s
+    float   body_yaw_rate      4 bytes  rad/s
+    float   thrust             4 bytes  [0,1]
+    uint8   target_system      1 byte
+    uint8   target_component   1 byte
+    uint8   type_mask          1 byte
+  Total: 39 bytes
+
+CRC seed bytes confirmed from pymavlink MAVLink_*_message.crc_extra:
+  SET_ATTITUDE_TARGET msg_id=82  crc_extra=49
+  HEARTBEAT           msg_id=0   crc_extra=50
 """
 
-import asyncio
+import logging
+import socket
 import struct
 import time
+from typing import Dict
+
 import numpy as np
-from typing import Dict, Optional
+from pymavlink.dialects.v20 import common as mav_common
+
 from dcl_adapter import SCUBALabAdapter
 
+# Body-rate scale: must match training config.py MAX_BODY_RATE
+MAX_BODY_RATE = 12.0  # rad/s
 
-class MAVLinkFrame:
-    """Minimal MAVLink v2 frame builder for SET_ATTITUDE_TARGET"""
+# type_mask = 128 = 0b10000000
+# bit 7 (0x80): IGNORE_ATTITUDE = 1  -> ignore quaternion
+# bits 0-6: all 0 -> use body rates + thrust
+TYPE_MASK_BODY_RATES_ONLY = 128
 
-    # MAVLink v2 frame structure
-    STX = 0xFD  # Frame start
-    SET_ATTITUDE_TARGET_MSG_ID = 82
-    HEARTBEAT_MSG_ID = 0
+# MAVLink system/component IDs
+OUR_SYSTEM_ID = 1
+OUR_COMPONENT_ID = 1
+TARGET_SYSTEM_ID = 1
+TARGET_COMPONENT_ID = 1
 
-    @staticmethod
-    def encode_set_attitude_target(
+# MAV_TYPE_QUADROTOR = 2
+MAV_TYPE_QUADROTOR = 2
+MAV_AUTOPILOT_INVALID = 8
+MAV_STATE_ACTIVE = 4
+
+logger = logging.getLogger(__name__)
+
+
+def _compute_crc16(data: bytes, crc_extra: int) -> int:
+    """CRC-16-CCITT over MAVLink header+payload bytes, then fold in crc_extra seed."""
+    crc = 0xFFFF
+    for byte in data:
+        tmp = byte ^ (crc & 0xFF)
+        tmp = (tmp ^ (tmp << 4)) & 0xFF
+        crc = ((crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)) & 0xFFFF
+    tmp = crc_extra ^ (crc & 0xFF)
+    tmp = (tmp ^ (tmp << 4)) & 0xFF
+    crc = ((crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)) & 0xFFFF
+    return crc
+
+
+class MAVLinkFrameBuilder:
+    """Spec-compliant MAVLink v2 frame builder.
+
+    Uses pymavlink message classes for payload encoding (correct field
+    ordering guaranteed), our own CRC computation, and a monotonically
+    incrementing sequence counter.
+    """
+
+    STX = 0xFD  # MAVLink v2 start byte
+
+    def __init__(self, system_id: int = OUR_SYSTEM_ID, component_id: int = OUR_COMPONENT_ID):
+        self.system_id = system_id
+        self.component_id = component_id
+        self._seq = 0
+        self._mav = mav_common.MAVLink(None, srcSystem=system_id, srcComponent=component_id)
+
+    def _next_seq(self) -> int:
+        seq = self._seq
+        self._seq = (self._seq + 1) & 0xFF
+        return seq
+
+    def _build_frame(self, msg) -> bytes:
+        """Build a complete MAVLink v2 frame from a pymavlink message object.
+
+        pymavlink .pack() handles payload field ordering. We rebuild the
+        header with our own sequence byte, then compute CRC ourselves.
+        """
+        packed_full = msg.pack(self._mav)
+        # v2 frame layout: STX(1) incompat(1) compat(1) seq(1) sysid(1) compid(1)
+        #   wait -- actual layout after STX: len(1) incompat(1) compat(1) seq(1) ...
+        # Header = 10 bytes total (STX + 9), CRC = last 2 bytes.
+        payload_bytes = packed_full[10:-2]
+
+        seq = self._next_seq()
+        header = bytes([
+            len(payload_bytes),   # payload length
+            0,                    # incompat_flags
+            0,                    # compat_flags
+            seq,
+            self.system_id,
+            self.component_id,
+        ]) + struct.pack('<I', msg.id)[:3]  # 3-byte little-endian msg_id
+
+        crc = _compute_crc16(header + payload_bytes, msg.crc_extra)
+        return bytes([self.STX]) + header + payload_bytes + struct.pack('<H', crc)
+
+    def set_attitude_target(
+        self,
         time_boot_ms: int,
-        target_system: int = 1,
-        target_component: int = 1,
-        type_mask: int = 0x04,  # ignore thrust, use rates
-        roll: float = 0.0,
-        pitch: float = 0.0,
-        yaw: float = 0.0,
-        roll_rate: float = 0.0,
-        pitch_rate: float = 0.0,
-        yaw_rate: float = 0.0,
-        thrust: float = 0.5,
+        body_roll_rate: float,
+        body_pitch_rate: float,
+        body_yaw_rate: float,
+        thrust: float,
     ) -> bytes:
-        """
-        Encode SET_ATTITUDE_TARGET MAVLink message (msg_id=82)
+        """Encode SET_ATTITUDE_TARGET using CTBR body rates.
 
-        Args:
-            time_boot_ms: Milliseconds since boot
-            roll, pitch, yaw: Desired attitude (radians)
-            roll_rate, pitch_rate, yaw_rate: Body rates (rad/s)
-            thrust: 0-1 normalized thrust
-            type_mask: bit flags for which fields to use
+        type_mask=128 (IGNORE_ATTITUDE): FC ignores quaternion, uses rates+thrust.
 
-        Returns:
-            MAVLink v2 frame bytes
+        body_*_rate values must already be in rad/s (policy_output * MAX_BODY_RATE).
+        thrust must be in [0, 1].
         """
-        # Payload: 39 bytes
-        payload = struct.pack(
-            "<IHBBBBBBBB",  # time_boot_ms, type_mask, target_sys, target_comp
-            time_boot_ms,  # uint32
-            0,  # type_mask (will set properly)
-            target_system,  # uint8
-            target_component,  # uint8
-            0, 0, 0, 0, 0, 0,  # Placeholder for attitude quaternion (4 floats)
+        msg = mav_common.MAVLink_set_attitude_target_message(
+            time_boot_ms=time_boot_ms,
+            target_system=TARGET_SYSTEM_ID,
+            target_component=TARGET_COMPONENT_ID,
+            type_mask=TYPE_MASK_BODY_RATES_ONLY,
+            q=[1.0, 0.0, 0.0, 0.0],  # identity; ignored by FC
+            body_roll_rate=body_roll_rate,
+            body_pitch_rate=body_pitch_rate,
+            body_yaw_rate=body_yaw_rate,
+            thrust=thrust,
         )
+        return self._build_frame(msg)
 
-        # Actually use proper format with quaternion + rates
-        payload = struct.pack(
-            "<IHBBBBBB",
-            time_boot_ms,
-            type_mask,
-            target_system,
-            target_component,
-            0, 0, 0, 0,  # padding
+    def heartbeat(self) -> bytes:
+        """Encode HEARTBEAT. MAV_TYPE_QUADROTOR=2 (correct for our platform)."""
+        msg = mav_common.MAVLink_heartbeat_message(
+            type=MAV_TYPE_QUADROTOR,
+            autopilot=MAV_AUTOPILOT_INVALID,
+            base_mode=0,
+            custom_mode=0,
+            system_status=MAV_STATE_ACTIVE,
+            mavlink_version=3,
         )
-
-        # Simpler approach: just pack the essential data
-        payload = struct.pack(
-            "<I",  # time_boot_ms (4 bytes)
-            time_boot_ms
-        )
-        # Add type_mask, target_system, target_component
-        payload += struct.pack("<BBBB", type_mask, target_system, target_component, 0)
-        # Add attitude (roll, pitch, yaw as floats)
-        payload += struct.pack("<fff", roll, pitch, yaw)
-        # Add rates
-        payload += struct.pack("<fff", roll_rate, pitch_rate, yaw_rate)
-        # Add thrust
-        payload += struct.pack("<f", thrust)
-
-        return MAVLinkFrame._build_frame(
-            MAVLinkFrame.SET_ATTITUDE_TARGET_MSG_ID, payload
-        )
-
-    @staticmethod
-    def encode_heartbeat(
-        system_type: int = 1,  # MAV_TYPE_FIXED_WING
-        autopilot_type: int = 8,  # MAV_AUTOPILOT_INVALID
-        base_mode: int = 0,
-        custom_mode: int = 0,
-        system_status: int = 4,  # MAV_STATE_ACTIVE
-    ) -> bytes:
-        """
-        Encode HEARTBEAT MAVLink message (msg_id=0)
-
-        Returns:
-            MAVLink v2 frame bytes
-        """
-        payload = struct.pack(
-            "<IBBBBB",
-            0,  # custom_mode
-            system_type,
-            autopilot_type,
-            base_mode,
-            0,  # reserved
-            system_status,
-        )
-        return MAVLinkFrame._build_frame(MAVLinkFrame.HEARTBEAT_MSG_ID, payload)
-
-    @staticmethod
-    def _build_frame(msg_id: int, payload: bytes, system_id: int = 1, component_id: int = 1) -> bytes:
-        """
-        Build complete MAVLink v2 frame with CRC
-
-        Format:
-        - 1 byte: frame start (0xFD)
-        - 1 byte: payload length
-        - 1 byte: incompatibility flags
-        - 1 byte: compatibility flags
-        - 1 byte: sequence
-        - 1 byte: system_id
-        - 1 byte: component_id
-        - 3 bytes: message_id (little-endian)
-        - N bytes: payload
-        - 2 bytes: CRC
-        """
-        payload_len = len(payload)
-
-        # Build frame without CRC
-        frame = bytearray()
-        frame.append(MAVLinkFrame.STX)
-        frame.append(payload_len)
-        frame.append(0)  # incompatibility flags
-        frame.append(0)  # compatibility flags
-        frame.append(0)  # sequence (0 for now)
-        frame.append(system_id)
-        frame.append(component_id)
-        frame.extend(struct.pack("<I", msg_id)[:3])  # 3-byte message ID
-        frame.extend(payload)
-
-        # CRC-16-CCITT (will compute if needed; for now, use zeros)
-        frame.extend(b"\x00\x00")  # Placeholder
-
-        return bytes(frame)
+        return self._build_frame(msg)
 
 
 class SCUBALabMAVLinkAdapter:
-    """
-    MAVLink-compliant adapter wrapping the distilled vision model.
+    """MAVLink-compliant adapter wrapping the distilled vision policy.
 
-    This adapter:
-    1. Loads the trained distilled vision model (dcl_adapter.SCUBALabAdapter)
-    2. Receives MAVLink telemetry (attitude, velocities, etc.)
-    3. Receives vision frames
-    4. Outputs SET_ATTITUDE_TARGET MAVLink messages
-    5. Manages heartbeat and timing synchronization
+    Loads the trained model, receives telemetry + vision frames, emits
+    spec-compliant SET_ATTITUDE_TARGET MAVLink v2 frames over UDP.
+
+    All send errors are logged at WARNING level and counted in self.send_errors.
+    No silent swallowing of exceptions anywhere in the send path.
     """
 
-    def __init__(self, model_path: str, udp_host: str = "127.0.0.1", udp_port: int = 14540):
+    def __init__(
+        self,
+        model_path: str,
+        udp_host: str = "127.0.0.1",
+        udp_port: int = 14540,
+        target_hz: float = 50.0,
+    ):
         """
-        Initialize MAVLink adapter
-
         Args:
-            model_path: Path to trained aigp_distill_final.zip
-            udp_host: UDP bind address (default: localhost for testing)
-            udp_port: UDP port (default: 14540 SITL)
+            model_path: Path to aigp_distill_final.zip. Canonical location:
+                        ./models_release/aigp_distill_final.zip
+            udp_host:   Destination IP for MAVLink UDP frames.
+            udp_port:   Destination port (DCL SITL default: 14540).
+            target_hz:  Control command rate. VADR-TS-001 allows 50-120 Hz.
         """
-        self.device_host = udp_host
-        self.device_port = udp_port
+        self.udp_host = udp_host
+        self.udp_port = udp_port
+        self.target_hz = target_hz
+        self.control_interval = 1.0 / target_hz
 
-        # Load the core perception model
-        print(f"[SCUBA Lab MAVLink] Loading model: {model_path}")
+        logger.info("[SCUBA Lab MAVLink] Loading model: %s", model_path)
         self.adapter = SCUBALabAdapter(model_path)
-        print(f"[SCUBA Lab MAVLink] ✓ Model loaded")
+        logger.info("[SCUBA Lab MAVLink] Model loaded.")
 
-        # Timing
+        self.frame_builder = MAVLinkFrameBuilder()
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
         self.start_time = time.time()
         self.frame_count = 0
-        self.last_heartbeat = 0
+        self.send_errors = 0  # never silenced; check this on submission day
 
-        # Latest telemetry (from simulator)
         self.latest_telemetry: Dict = {
-            "position": [0.0, 0.0, 0.0],
-            "velocity": [0.0, 0.0, 0.0],
+            "position":    [0.0, 0.0, 0.0],
+            "velocity":    [0.0, 0.0, 0.0],
             "orientation": [0.0, 0.0, 0.0],
         }
 
     def get_time_boot_ms(self) -> int:
-        """Get milliseconds since adapter started"""
         return int((time.time() - self.start_time) * 1000)
 
     def process_telemetry(self, attitude: tuple, velocity: tuple, position: tuple):
-        """
-        Update with latest telemetry from simulator
-
-        Args:
-            attitude: (roll, pitch, yaw) in radians
-            velocity: (vx, vy, vz) in m/s
-            position: (x, y, z) in meters
-        """
         self.latest_telemetry["orientation"] = list(attitude)
-        self.latest_telemetry["velocity"] = list(velocity)
-        self.latest_telemetry["position"] = list(position)
+        self.latest_telemetry["velocity"]    = list(velocity)
+        self.latest_telemetry["position"]    = list(position)
+
+    def _send(self, frame: bytes) -> bool:
+        """Send frame over UDP. Logs + counts errors; never swallows silently."""
+        try:
+            self._sock.sendto(frame, (self.udp_host, self.udp_port))
+            return True
+        except OSError as exc:
+            self.send_errors += 1
+            logger.warning(
+                "[SCUBA Lab MAVLink] UDP send failed (#%d): %s",
+                self.send_errors, exc,
+            )
+            return False
 
     def step(self, vision_frame: np.ndarray) -> bytes:
-        """
-        Main inference step: vision + telemetry → MAVLink SET_ATTITUDE_TARGET
+        """Inference: vision + telemetry -> MAVLink SET_ATTITUDE_TARGET (sent + returned).
 
-        Args:
-            vision_frame: 48×48×3 FPV camera frame (uint8, 0-255)
-
-        Returns:
-            SET_ATTITUDE_TARGET MAVLink message (bytes)
+        Semantic mapping (CTBR):
+          body_roll_rate  = command['roll']  * MAX_BODY_RATE  (rad/s)
+          body_pitch_rate = command['pitch'] * MAX_BODY_RATE  (rad/s)
+          body_yaw_rate   = command['yaw']   * MAX_BODY_RATE  (rad/s)
+          thrust          = command['throttle']               ([0,1])
         """
-        # Get drone command from model
         command = self.adapter.step(self.latest_telemetry, vision_frame)
 
-        # Map command to attitude target
-        # Model outputs: {throttle [0,1], roll [-1,1], pitch [-1,1], yaw [-1,1]}
-        # Convert to attitude setpoints and thrust for MAVLink
-        throttle = float(command["throttle"])
-        roll = float(command["roll"]) * np.pi / 4  # Map [-1, 1] to [-π/4, π/4] radians
-        pitch = float(command["pitch"]) * np.pi / 4
-        yaw = float(command["yaw"]) * np.pi / 4
-
-        # Get current time
-        time_boot_ms = self.get_time_boot_ms()
-
-        # Build MAVLink SET_ATTITUDE_TARGET message
-        msg = MAVLinkFrame.encode_set_attitude_target(
-            time_boot_ms=time_boot_ms,
-            roll=roll,
-            pitch=pitch,
-            yaw=yaw,
-            thrust=throttle,
+        frame = self.frame_builder.set_attitude_target(
+            time_boot_ms=self.get_time_boot_ms(),
+            body_roll_rate=float(command["roll"])   * MAX_BODY_RATE,
+            body_pitch_rate=float(command["pitch"]) * MAX_BODY_RATE,
+            body_yaw_rate=float(command["yaw"])     * MAX_BODY_RATE,
+            thrust=float(command["throttle"]),
         )
-
+        self._send(frame)
         self.frame_count += 1
-        return msg
+        return frame
 
-    def get_heartbeat(self) -> bytes:
-        """Generate heartbeat message"""
-        return MAVLinkFrame.encode_heartbeat()
+    def send_heartbeat(self) -> bool:
+        return self._send(self.frame_builder.heartbeat())
 
     async def run_loop(self, vision_stream_generator, telemetry_source):
-        """
-        Async main loop: continuously process vision, emit control commands
-
-        Args:
-            vision_stream_generator: Async generator yielding vision frames
-            telemetry_source: Async function returning latest telemetry dict
-        """
-        heartbeat_interval = 0.5  # Send heartbeat every 500ms (2 Hz)
-        control_interval = 0.01  # 100 Hz control rate
-
+        """Async control loop: heartbeat at 2 Hz, control at target_hz."""
+        import asyncio
+        heartbeat_interval = 0.5
         last_heartbeat = time.time()
         last_control = time.time()
 
         async for frame in vision_stream_generator:
             now = time.time()
 
-            # Emit heartbeat if needed
-            if now - last_heartbeat > heartbeat_interval:
-                hb = self.get_heartbeat()
-                # Send via UDP (not shown here)
+            if now - last_heartbeat >= heartbeat_interval:
+                if not self.send_heartbeat():
+                    logger.warning("[SCUBA Lab MAVLink] Heartbeat send failed.")
                 last_heartbeat = now
 
-            # Update telemetry
             telemetry = await telemetry_source()
             if telemetry:
                 self.process_telemetry(
-                    telemetry.get("attitude", (0, 0, 0)),
-                    telemetry.get("velocity", (0, 0, 0)),
-                    telemetry.get("position", (0, 0, 0)),
+                    telemetry.get("attitude",  (0.0, 0.0, 0.0)),
+                    telemetry.get("velocity",  (0.0, 0.0, 0.0)),
+                    telemetry.get("position",  (0.0, 0.0, 0.0)),
                 )
 
-            # Emit control command at target rate
-            if now - last_control > control_interval:
-                ctrl = self.step(frame)
-                # Send via UDP (not shown here)
+            if now - last_control >= self.control_interval:
+                self.step(frame)
                 last_control = now
+
+    def close(self):
+        self._sock.close()
