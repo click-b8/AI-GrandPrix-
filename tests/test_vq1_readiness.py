@@ -90,10 +90,14 @@ class TestWeightLoad:
         from dcl_adapter import SCUBALabAdapter
         adapter = SCUBALabAdapter(self.DISTILL_ZIP)
 
+        # policy_net layers use Kaiming-uniform init; trained weights exceed 1.5x floor.
+        # action_net uses SB3's custom init: std=0.01. Post-training measured at ~0.09
+        # (fragilities.md: "SB3 action_net init is 0.01, so post-training 0.09 = ~9x above init").
+        # Threshold: 5x SB3 init = 0.05 — well below measured 0.09, well above 0.01 init.
         kaiming_floors = {
-            'policy_net.0': 0.051 * 1.5,  # fan_in=256
-            'policy_net.2': 0.072 * 1.5,  # fan_in=128
-            'action_net':   0.102 * 1.5,  # fan_in=64
+            'policy_net.0': 0.051 * 1.5,  # fan_in=256, Kaiming floor * 1.5
+            'policy_net.2': 0.072 * 1.5,  # fan_in=128, Kaiming floor * 1.5
+            'action_net':   0.01  * 5.0,  # SB3 init=0.01, threshold=0.05; measured=0.09
         }
 
         w0 = adapter.policy.mlp_extractor['policy_net'][0].weight.detach()
