@@ -147,8 +147,8 @@ python3 test_dcl_adapter.py
 ## Contact & Support
 
 **Team:** Scuba Lab
-**Repository:** /Users/mpcrmini2/Desktop/AI GrandPrix/
-**Model Location:** ~/Desktop/AI_GrandPrix_Models/aigp_distill_final.zip
+**Repository:** https://github.com/click-b8/AI-GrandPrix-
+**Model Location:** ./models_release/aigp_distill_final.zip
 
 ---
 

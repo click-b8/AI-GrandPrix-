@@ -10,6 +10,15 @@ trained*/
 *.zip
 *.npy
 
+# VQ1 deployment artifacts — tracked despite the patterns above.
+# Added by refactor/deduplicate-root-subdir: these are load-bearing
+# for test_dcl_adapter.py and for any fresh clone that wants to run
+# the adapter end-to-end. Other trained*/ dirs (historical runs,
+# stored only in drone-race-sim/) remain ignored.
+!trained_distilled/
+!trained_distilled/**
+!models_release/*.zip
+
 # Recorded videos
 *.mp4
 
