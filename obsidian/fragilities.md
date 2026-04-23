@@ -16,6 +16,11 @@ framing still holds — the *pattern* of composed silent fallbacks is
 what made this project dangerous, not any single bug. One of three
 fixed; two to go.
 
+**Note on `run_vq1.py` (2026-04-23, `fix/vision-stub-guard`):** uses a
+module-level `_allow_stub_vision` flag; test isolation relies on
+`try/finally`. If the flag grows additional toggle callers, prefer
+dependency injection to avoid test-order-dependent flakes.
+
 The deployment pipeline has three independent failure points, each of
 which fails silently with an individually-reasonable-looking fallback.
 The composition is a system that will appear to run end-to-end —
@@ -439,35 +444,165 @@ the uncommitted edit. Do not leave the drift in place.
 
 ## Canonical copy of each file
 
-- **Severity:** medium — deployment docs reference one, training lives in the other
-- **Measurement status:** resolved by choice: root is canonical for
-  deployment, `drone-race-sim/` for training and HPC work
+- **Severity:** ~~medium~~ → **RESOLVED 2026-04-21** on branch
+  `refactor/deduplicate-root-subdir`. Root is now the single source of
+  truth for all VQ1-deployment files; the duplicates in `drone-race-sim/`
+  were deleted and the load-bearing files migrated up.
+- **Measurement status:** resolved by action.
 
-Files that are **identical** between root and `drone-race-sim/`:
-`dcl_adapter.py`, `dcl_mavlink_adapter.py`, `train_vision.py`, `track.py`,
-`vision_model.py`, `race.py`, `requirements.txt`, `run.sh`,
-`launch_viewer.sh`, `DCL_INTEGRATION.md`, `COMPETITION_STRATEGY.md`,
-`README_SCUBA_LAB.md`.
+### Resolution
 
-Files that **differ**:
-- `config.py` — root has `FPV_TILT_DEG = -10`, subdir has `= 0` (uncommitted drift).
-- `drone_race_env.py` — root has a gate-alignment reward multiplier
-  and a simpler viewer-init path; subdir has the older version with a
-  try/except around viewer init.
+Identical duplicates removed from `drone-race-sim/` (13 files plus
+`models_release/MODELS.json`):
+`dcl_mavlink_adapter.py`, `train_vision.py`, `track.py`, `vision_model.py`,
+`race.py`, `requirements.txt`, `run.sh`, `launch_viewer.sh`,
+`DCL_INTEGRATION.md`, `COMPETITION_STRATEGY.md`, `README_SCUBA_LAB.md`,
+`README.md`, `MODELS.json`.
 
-Files that are **load-bearing for deployment but exist only in `drone-race-sim/`**:
-- `dcl_mavlink_client.py` — the intended VQ1 entry point
-- `test_dcl_adapter.py` — the adapter test (currently broken; see
-  [[fragilities#The policy head is untrained at deployment]])
-- `measure_inference_time.py` — timing script
-- `train_hpc.slurm`, `train_vision_hpc.slurm` — HPC job scripts
-- `models_release/aigp_distill_final.zip` — the actual competition model
-- `trained_distilled/policy.pth` — raw weights the adapter unzips
+Diverged files resolved by root-wins rule (per audit: root is canonical
+for all three):
+- `config.py` — root's `FPV_TILT_DEG = -10` survives; subdir's
+  uncommitted `= 0` is gone with the deletion. Branch C
+  (`fix/fpv-tilt-canonicalization`) still owns the *empirical* tilt
+  validation — it just does so against the single remaining config.
+- `drone_race_env.py` — root's newer content (alignment-bonus reward,
+  cleaner viewer init) survives.
+- `dcl_adapter.py` — root's post-`fix/policy-weight-load` version
+  survives; subdir's pre-fix copy is gone.
+- `models_release/README.md` — root's `author={[ SCUBA LAB]}` survives.
 
-Either migrate these to root, or document in every README that VQ1
-deployment requires files from the archive. Picking "root = canonical"
-only works if root actually contains what you need to deploy. Right
-now it doesn't.
+Load-bearing files moved from subdir to root (no history preservation;
+these were either untracked in the nested repo or straight copies):
+- `dcl_mavlink_client.py` — now at root. Previously **not tracked
+  anywhere**; this branch introduces it to version control for the
+  first time.
+- `test_dcl_adapter.py` — at root, with the `sys.path.insert` hack
+  removed (no longer needed).
+- `measure_inference_time.py` — at root, preserving the pre-existing
+  multi-path lookup modification from the subdir working tree.
+- `trained_distilled/` — whole directory (policy.pth and siblings) at
+  root.
+- `models_release/aigp_distill_final.zip` — at root alongside the
+  other two zips (`aigp_8gates_final.zip`, `aigp_racer_final.zip`),
+  matching `MODELS.json`'s canonical registry.
+
+`.gitignore` amended to carve out negations for these paths
+(`!trained_distilled/**`, `!models_release/*.zip`). Other `trained*/`
+directories in `drone-race-sim/` (historical training runs) remain
+ignored.
+
+### Still open (carried to separate branches)
+
+- Branch B (`fix/canonical-model-path`) will decide the fate of
+  `AI_GrandPrix_Models/aigp_8gates_final.zip` — a pre-existing
+  tracked duplicate at a third path that this branch intentionally
+  left alone.
+- The nested `drone-race-sim/` git repo still exists; flattening it
+  is deferred. See also the new "Nested repo shares the outer repo's
+  GitHub remote" entry below.
+
+---
+
+## Nested repo shares the outer repo's GitHub remote
+
+- **Severity:** medium — footgun, not immediately blocking, but can
+  silently break a submission workflow
+- **Measurement status:** resolved by inspection; no current fix planned
+- **Discovered during:** `refactor/deduplicate-root-subdir`
+
+The nested `drone-race-sim/` is its own git repo AND its `origin`
+remote points at the **same GitHub URL** as the outer repo
+(`git@github.com:click-b8/AI-GrandPrix-.git`). This means any `git
+push` executed from inside `drone-race-sim/` targets the outer repo's
+GitHub project. The nested repo's `main` branch and the outer repo's
+`main` branch both push to the same `origin/main` on GitHub.
+
+Concretely, during the `refactor/deduplicate-root-subdir` branch, a
+`git fetch origin` from inside `drone-race-sim/` pulled the outer
+repo's recent commits (including `73f226e` which has nothing to do
+with the nested repo's history) into the nested repo's tracking refs.
+The two repos have diverged histories at the same remote, which is
+a state GitHub didn't intend and which will misbehave in ways that
+depend on exactly what operation is attempted from inside the nested
+repo.
+
+### Concrete risk examples
+
+- Running `git push` from inside `drone-race-sim/` while on its
+  `main` would attempt to push its stale history on top of the outer
+  repo's tip. GitHub refuses non-fast-forward pushes to `main` by
+  default, so this probably errors rather than silently overwrites —
+  but the error message won't obviously identify the root cause.
+- `git push --force` from inside the nested repo would overwrite the
+  outer repo's `main`. No guardrail against accidental invocation.
+- Any branch created inside the nested repo and pushed (e.g., if
+  someone inside `drone-race-sim/` ran `git push -u origin my-branch`)
+  would create a branch on the OUTER repo's GitHub project — which
+  might be what they wanted or might not, and which wouldn't show up
+  where they expected.
+- Pull requests on the GitHub project would not distinguish "from
+  the outer repo" versus "from the nested repo", since both share
+  the same remote URL.
+
+### Mitigation options (not in scope for current VQ1 work)
+
+- **Flatten the nested repo:** `rm -rf drone-race-sim/.git` and
+  move its working tree into the outer repo as plain tracked files.
+  Deferred post-VQ1 per [[vq1-execution-plan#Fix-vs-defer triage]].
+- **Repoint the nested repo to a different remote** (e.g., a new
+  GitHub project for archival purposes, or an orphan branch of the
+  outer repo). Would preserve the nested repo's structure while
+  eliminating the footgun.
+- **Add a pre-push hook inside `drone-race-sim/.git/hooks/`** that
+  refuses pushes matching the outer repo's URL. Fast interim
+  mitigation; ~10 lines of bash.
+
+### How to avoid tripping the footgun until it's fixed
+
+- Never run `git push` or `git fetch origin` from inside
+  `drone-race-sim/` unless you specifically intend to reach the
+  outer repo's GitHub project.
+- When committing in the nested repo (as this branch did for the
+  dedupe deletions), the commit stays local unless explicitly
+  pushed. Let it stay local; the outer repo's gitlink is what
+  connects the two.
+- If `git status` from the outer repo shows `m drone-race-sim`
+  (nested repo has pending changes), that is the canonical signal
+  — operate on the nested repo only enough to address those
+  specific changes; don't generalize to other housekeeping.
+
+---
+
+## SSH credentials on this machine come from macOS Keychain, not ssh-agent
+
+- **Severity:** low — documentary, not a failure state
+- **Surfaced during:** `docs/post-audit-followup` force-push
+  diagnostics, 2026-04-23
+
+`ssh-add -l` on this machine returns "The agent has no identities"
+as a steady state. This is not a failure signal. SSH credentials
+are served by macOS Keychain via `UseKeychain yes` (a macOS-specific
+SSH option, not part of OpenSSH's portable spec) in `~/.ssh/config`
+or system-wide ssh_config, which loads keys on demand from the
+Keychain without requiring `ssh-add` to populate the agent.
+
+When diagnosing SSH-related git failures, use positive-capability
+signals:
+- `git fetch origin` — if it succeeds, git's SSH path works.
+- `ssh -T git@github.com` — if it returns
+  "Hi <username>! You've successfully authenticated", the key is
+  being served and accepted by GitHub.
+- `git remote -v` — sanity-check the URL hasn't drifted.
+
+Do NOT use `ssh-add -l` presence as a failure gate on this machine;
+the negative result is baseline. A retry-authorization conditional
+that required "ssh-add -l shows at least one identity" would never
+be satisfied here and would force unnecessary stops on real
+transients.
+
+On a non-macOS machine (Linux, WSL), this entry does not apply —
+`UseKeychain` is unrecognized outside Apple's ssh fork, and
+`ssh-add -l` is a meaningful check there.
 
 ---
 
