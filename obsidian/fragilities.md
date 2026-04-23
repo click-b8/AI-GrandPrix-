@@ -16,6 +16,11 @@ framing still holds — the *pattern* of composed silent fallbacks is
 what made this project dangerous, not any single bug. One of three
 fixed; two to go.
 
+**Note on `run_vq1.py` (2026-04-23, `fix/vision-stub-guard`):** uses a
+module-level `_allow_stub_vision` flag; test isolation relies on
+`try/finally`. If the flag grows additional toggle callers, prefer
+dependency injection to avoid test-order-dependent flakes.
+
 The deployment pipeline has three independent failure points, each of
 which fails silently with an individually-reasonable-looking fallback.
 The composition is a system that will appear to run end-to-end —
@@ -565,6 +570,39 @@ repo.
   (nested repo has pending changes), that is the canonical signal
   — operate on the nested repo only enough to address those
   specific changes; don't generalize to other housekeeping.
+
+---
+
+## SSH credentials on this machine come from macOS Keychain, not ssh-agent
+
+- **Severity:** low — documentary, not a failure state
+- **Surfaced during:** `docs/post-audit-followup` force-push
+  diagnostics, 2026-04-23
+
+`ssh-add -l` on this machine returns "The agent has no identities"
+as a steady state. This is not a failure signal. SSH credentials
+are served by macOS Keychain via `UseKeychain yes` (a macOS-specific
+SSH option, not part of OpenSSH's portable spec) in `~/.ssh/config`
+or system-wide ssh_config, which loads keys on demand from the
+Keychain without requiring `ssh-add` to populate the agent.
+
+When diagnosing SSH-related git failures, use positive-capability
+signals:
+- `git fetch origin` — if it succeeds, git's SSH path works.
+- `ssh -T git@github.com` — if it returns
+  "Hi <username>! You've successfully authenticated", the key is
+  being served and accepted by GitHub.
+- `git remote -v` — sanity-check the URL hasn't drifted.
+
+Do NOT use `ssh-add -l` presence as a failure gate on this machine;
+the negative result is baseline. A retry-authorization conditional
+that required "ssh-add -l shows at least one identity" would never
+be satisfied here and would force unnecessary stops on real
+transients.
+
+On a non-macOS machine (Linux, WSL), this entry does not apply —
+`UseKeychain` is unrecognized outside Apple's ssh fork, and
+`ssh-add -l` is a meaningful check there.
 
 ---
 
