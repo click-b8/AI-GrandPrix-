@@ -16,6 +16,11 @@ framing still holds — the *pattern* of composed silent fallbacks is
 what made this project dangerous, not any single bug. One of three
 fixed; two to go.
 
+**Note on `run_vq1.py` (2026-04-23, `fix/vision-stub-guard`):** uses a
+module-level `_allow_stub_vision` flag; test isolation relies on
+`try/finally`. If the flag grows additional toggle callers, prefer
+dependency injection to avoid test-order-dependent flakes.
+
 The deployment pipeline has three independent failure points, each of
 which fails silently with an individually-reasonable-looking fallback.
 The composition is a system that will appear to run end-to-end —
