@@ -7,14 +7,16 @@ anything in the deployment path.
 
 ## Silent failure chain (read this first)
 
-**Status as of 2026-04-21:** the weight-load pillar (#2 below) has been
-fixed on branch `fix/policy-weight-load`; see the resolution section of
-[[fragilities#The policy head is untrained at deployment]]. The other
-two pillars (#1 wrong advertised model path, #3 CTBR → attitude semantic
-mismatch in MAVLink) are still live and will break a submission. The
-framing still holds — the *pattern* of composed silent fallbacks is
-what made this project dangerous, not any single bug. One of three
-fixed; two to go.
+**Status as of 2026-04-23:** all three pillars are now addressed on
+main. Pillar #1 (wrong advertised model path) resolved via
+`refactor/deduplicate-root-subdir` and `fix/mavlink-complete`
+(commits `582e28d` → PR #3 merge `f74981a`; `3c68ade` → PR #4 merge
+`de6e87d`). Pillar #2 (weight-load) resolved earlier on
+`fix/policy-weight-load`. Pillar #3 (CTBR → attitude semantic
+mismatch) resolved via `fix/mavlink-complete` (commit `85d2a42` →
+PR #4 merge `de6e87d`). **Three of three fixed; diagnostic record
+kept below because the composed-silent-failure pattern remains the
+load-bearing lesson.**
 
 **Note on `run_vq1.py` (2026-04-23, `fix/vision-stub-guard`):** uses a
 module-level `_allow_stub_vision` flag; test isolation relies on
@@ -242,8 +244,12 @@ directions; when they do, observability wins.
 
 ## MAVLink action semantics mismatch (CTBR → attitude)
 
-- **Severity:** critical
-- **Measurement status:** resolved by inspection
+- **Severity:** ~~critical~~ → **RESOLVED 2026-04-23** on branch
+  `fix/mavlink-complete`. Commit `85d2a42` rewrote the CTBR semantic;
+  on main via PR #4 merge `de6e87d`. Diagnostic record preserved
+  below.
+- **Measurement status:** resolved by inspection + test coverage in
+  `tests/test_vq1_readiness.py::TestCTBRSemantics`.
 - **Affected files:** `dcl_mavlink_adapter.py`
 
 The trained policy emits [normalized_thrust, roll_rate, pitch_rate,
@@ -285,8 +291,13 @@ quaternion and use body rates + thrust.
 
 ## MAVLink CRC is a zeroed placeholder
 
-- **Severity:** critical for spec compliance; blocking for submission
-- **Measurement status:** resolved by inspection
+- **Severity:** ~~critical for spec compliance; blocking for submission~~
+  → **RESOLVED 2026-04-23** on branch `fix/mavlink-complete`. Commit
+  `85d2a42` replaced the zeroed CRC with CRC-16-CCITT computed from
+  per-message `crc_extra` seeds pulled from `pymavlink`'s message
+  classes; on main via PR #4 merge `de6e87d`.
+- **Measurement status:** resolved by inspection + byte-exact
+  roundtrip test in `tests/test_mavlink_compliance.py::TestCRC`.
 - **Affected files:** `dcl_mavlink_adapter.py:149-150`
 
 ```python
@@ -310,8 +321,13 @@ MAVLink message definitions.
 
 ## MAVLink payload is malformed
 
-- **Severity:** critical
-- **Measurement status:** resolved by inspection
+- **Severity:** ~~critical~~ → **RESOLVED 2026-04-23** on branch
+  `fix/mavlink-complete`. Commit `85d2a42` replaced the handrolled
+  `struct.pack` payload with `pymavlink`'s `MAVLink_set_attitude_target_message`
+  class. Monotonic sequence byte and `MAV_TYPE_QUADROTOR`. On main
+  via PR #4 merge `de6e87d`.
+- **Measurement status:** resolved by inspection + byte-exact
+  pymavlink-reference roundtrip test.
 - **Affected files:** `dcl_mavlink_adapter.py:55-87`
 
 The `encode_set_attitude_target` function has three successive
@@ -338,8 +354,11 @@ as garbage.
 
 ## UDP transport is absent in `dcl_mavlink_adapter.py`
 
-- **Severity:** critical for that file; mitigated because the real
-  entry point `dcl_mavlink_client.py` uses MAVSDK instead
+- **Severity:** ~~critical for that file~~ → **RESOLVED 2026-04-23**
+  on branch `fix/mavlink-complete`. Commit `85d2a42` added real
+  `socket.sendto(frame, (host, port))` in `SCUBALabMAVLinkAdapter._send`,
+  with `send_errors` counter for logged failures. On main via PR #4
+  merge `de6e87d`.
 - **Affected files:** `dcl_mavlink_adapter.py:273, 288`
 
 Both lines contain `# Send via UDP (not shown here)`. There is no
@@ -354,9 +373,13 @@ see the next entry.
 
 ## `dcl_mavlink_client.py` uses `set_actuator_control`, not the spec-mandated messages
 
-- **Severity:** high — submission would not satisfy VADR-TS-001
-- **Measurement status:** resolved by inspection
-- **Affected files:** `drone-race-sim/dcl_mavlink_client.py:215-225`
+- **Severity:** ~~high — submission would not satisfy VADR-TS-001~~
+  → **RESOLVED 2026-04-23** on branch `fix/mavlink-complete`. Commit
+  `3c68ade` rewrote the client to delegate to `MAVLinkFrameBuilder`
+  and emit spec-compliant `SET_ATTITUDE_TARGET` frames over a real
+  UDP socket. On main via PR #4 merge `de6e87d`.
+- **Affected files:** `dcl_mavlink_client.py` (now at root after
+  dedupe).
 
 The DCL spec (VADR-TS-001) requires `SET_ATTITUDE_TARGET` or
 `SET_POSITION_TARGET_LOCAL_NED`. Our client calls MAVSDK's
@@ -373,10 +396,19 @@ write of a properly-formed `SET_ATTITUDE_TARGET`.
 
 ---
 
-## Vision stream is a placeholder
+## Vision stream is a placeholder — PARTIALLY RESOLVED
 
-- **Severity:** high — model currently runs on all-black frames
-- **Affected files:** `drone-race-sim/dcl_mavlink_client.py:156-158`
+- **Severity:** ~~high — model currently runs on all-black frames~~
+  → **GUARD LANDED 2026-04-23** on branch `fix/vision-stub-guard`.
+  Commit `21762c5` made `run_vq1._get_vision_frame()` raise
+  `NotImplementedError` unless `--allow-stub-vision` CLI flag is
+  passed; on main via PR #5 merge `aae8af9`. The runtime guard
+  prevents silent emission of garbage-input MAVLink streams. **The
+  actual vision-integration (replacing the stub with a real DCL
+  image-API call) remains blocked until the DCL simulator ships in
+  May 2026.**
+- **Affected files:** `run_vq1.py` (root; replaces
+  `drone-race-sim/dcl_mavlink_client.py`'s prior stub).
 
 ```python
 # In actual competition, this comes from DCL simulator
@@ -701,8 +733,12 @@ until the sim ships. Flagged in [[open-questions]].
 
 ## Silent `except: pass` in the control loop
 
-- **Severity:** medium — destroys observability
-- **Affected files:** `drone-race-sim/dcl_mavlink_client.py:226-231`
+- **Severity:** ~~medium — destroys observability~~ → **RESOLVED
+  2026-04-23** on branch `fix/mavlink-complete`. Commit `3c68ade`
+  removed the two bare `except: pass` blocks; send errors now
+  logged at WARNING and counted in `self.send_errors`. On main
+  via PR #4 merge `de6e87d`.
+- **Affected files:** `dcl_mavlink_client.py` (root after dedupe).
 
 Two naked `except` blocks swallow everything from the MAVLink send.
 Whatever the real failure is — auth, serialization, disconnect — the

@@ -270,12 +270,14 @@ things that probably deserve revisiting.
 ## 2026-04-23 — Author identity uniformity
 
 - **Date:** 2026-04-23.
-- **Decision:** all commits on this project use the git identity that
-  `git config user.name` and `git config user.email` return from the
-  committer's machine. Non-person identities (team-bot-style names
-  like `SCUBA Lab <scubalab@vq1.local>`, `Bot <bot@...>`, CI
-  service accounts, etc.) are not permitted; Co-Authored-By
-  trailers to bot identities are not permitted.
+- **Decision:** Non-person identities (team-bot-style names like
+  `SCUBA Lab <scubalab@vq1.local>`, `Bot <bot@...>`, CI service
+  accounts, etc.) are not permitted on this project, and
+  Co-Authored-By trailers to bot identities are not permitted.
+  Multiple identities of the same human operator — e.g., a
+  local-machine identity (`git config user.*`) and a GitHub-web
+  identity used by the "Merge pull request" button — are permitted
+  as long as both are attributable to the same human.
 - **Why:** the project's established convention across all prior
   commits was a single-person hostname-derived identity. The three
   commits on `fix/mavlink-complete` (`3f34b57`, `7975ccf`, `f433ddf`)
@@ -296,7 +298,67 @@ things that probably deserve revisiting.
   which requires a runnable `git config user.name/user.email`
   check before the first commit of any branch, and explicitly
   forbids non-person identities.
+- **Amendment (2026-04-23, same day):** the decision originally
+  required "the git identity that `git config user.name` and
+  `git config user.email` return from the committer's machine."
+  That phrasing was too narrow. After the VQ1-readiness merge
+  sequence landed, four GitHub-web merge commits were authored as
+  `Noah Brande <156040171+click-b8@users.noreply.github.com>` (the
+  GitHub-noreply identity for the `click-b8` account) — the same
+  human operator as the `MPCR Mini 2 <mpcrmini2@MPCRs-Mac-mini.local>`
+  local identity used for every other commit on the project. The
+  two-identities-one-person situation isn't what the original
+  decision was written against. The amended decision clause above
+  carves out same-human multi-interface identities while preserving
+  the no-bot rule. Does NOT retroactively change the SCUBA Lab
+  rebase decision — that situation had a committer identity that
+  wasn't verifiably the project owner, and the same-human carve-out
+  doesn't apply.
 - **Still-current:** yes. Applies to all future branches.
+
+---
+
+## 2026-04-23 — Accepted merge-strategy deviation on VQ1-readiness sequence
+
+- **Date:** 2026-04-23.
+- **Decision:** accept the deviation where the VQ1-readiness merge
+  sequence (PRs #3, #4, #5, #6) landed via GitHub's "Create a merge
+  commit" web-UI button rather than the planned local
+  `git merge --ff-only` + `git push origin main`. Do not force-push
+  main to recover.
+- **What was deviated from:** the (e) merge-sequence plan explicitly
+  specified local fast-forward + push for each of the four PRs,
+  producing zero integration merge commits and a post-sequence main
+  tip of `66bbefe`. The actual execution used GitHub's web-UI button
+  for each PR, producing four integration merge commits and a
+  post-sequence main tip of `f74981a`.
+- **What that produced:**
+  - 4 new integration merge commits on main (`f74981a`, `de6e87d`,
+    `aae8af9`, `d08e61d`), each authored by GitHub's web-merge
+    identity for the project owner.
+  - Main advanced to `f74981a` instead of the planned `66bbefe`.
+  - All feature-branch commits retained their `MPCR Mini 2`
+    authorship; content is byte-identical to what the planned
+    fast-forward would have produced.
+- **Why accept:** the topology deviation is aesthetic — every commit
+  reachable from the planned main is still reachable from the actual
+  main, with 4 additional merge commits providing PR-link
+  discoverability. Recovery would require force-pushing main back to
+  `66bbefe`, replacing the 4 merge commits, and re-delivering the
+  stack — high-risk (force-push to main), high-cost, zero content
+  benefit.
+- **Root cause:** likely clicked GitHub's default "Merge" button
+  instead of the planned local ff + push. Not a process-discipline
+  failure in drafting — the plan was explicit — but a discipline
+  failure at execution time where a single UI click bypassed the
+  specified mechanism.
+- **Mitigation:** [[session-prompt-template]]'s Do-NOT list gains
+  an entry forbidding GitHub-UI merge buttons when the plan specifies
+  a local fast-forward + push. The current `docs/post-merge-state-sync`
+  branch tests that rule by requiring its own merge to use local ff
+  + push, not the button.
+- **Still-current:** yes. Future merge sequences should include an
+  explicit merge-strategy reminder in the prompt.
 
 ---
 
