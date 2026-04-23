@@ -66,6 +66,15 @@ class SCUBALabDCLClient:
         # MAVSDK system (if available)
         self.system: Optional[System] = None
 
+        # MAVLink frame builder (spec-compliant, from dcl_mavlink_adapter)
+        import socket as _socket
+        import time as _time
+        from dcl_mavlink_adapter import MAVLinkFrameBuilder
+        self._frame_builder = MAVLinkFrameBuilder()
+        self._udp_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        self._start_time = _time.time()
+        self.send_errors = 0
+
         print(f"[SCUBA Lab DCL Client] Ready for DCL competition")
 
     async def connect(self) -> bool:
@@ -186,49 +195,30 @@ class SCUBALabDCLClient:
             self.running = False
 
     async def send_attitude_target(self, roll: float, pitch: float, yaw: float, throttle: float):
-        """
-        Send SET_ATTITUDE_TARGET MAVLink command to DCL simulator.
+        """Send SET_ATTITUDE_TARGET via corrected MAVLink encoder (CTBR semantics).
 
-        Args:
-            roll: Roll command [-1, 1]
-            pitch: Pitch command [-1, 1]
-            yaw: Yaw command [-1, 1]
-            throttle: Throttle command [0, 1]
-        """
-        if not self.system:
-            return  # No-op if not connected
+        Delegates to MAVLinkFrameBuilder from dcl_mavlink_adapter — correct CRC,
+        payload ordering, type_mask=128 (IGNORE_ATTITUDE), body rates in rad/s.
 
+        Semantic:
+          body_roll_rate  = roll  * MAX_BODY_RATE  (rad/s)
+          body_pitch_rate = pitch * MAX_BODY_RATE  (rad/s)
+          body_yaw_rate   = yaw   * MAX_BODY_RATE  (rad/s)
+          thrust          = throttle               ([0, 1])
+        """
+        from dcl_mavlink_adapter import MAX_BODY_RATE
+        frame = self._frame_builder.set_attitude_target(
+            time_boot_ms=int((asyncio.get_event_loop().time() - self._start_time) * 1000),
+            body_roll_rate=roll  * MAX_BODY_RATE,
+            body_pitch_rate=pitch * MAX_BODY_RATE,
+            body_yaw_rate=yaw   * MAX_BODY_RATE,
+            thrust=throttle,
+        )
         try:
-            # Convert commands to body rates (alternative: use attitude_eulerian if available)
-            # This is a simplified mapping; actual DCL specs may differ
-            roll_rate = roll * 180.0  # degrees/second
-            pitch_rate = pitch * 180.0
-            yaw_rate = yaw * 180.0
-            thrust = throttle  # 0-1 normalized thrust
-
-            # MAVSDK attitude control (if available)
-            # Note: DCL specs prefer SET_ATTITUDE_TARGET MAVLink messages
-            # This is a convenience wrapper; actual integration depends on MAVSDK version
-            # and DCL simulator's supported message set
-
-            # For now, use attitude_euler_angle_throttle (simplified)
-            await self.system.action.set_actuator_control(
-                0,  # Primary actuator group
-                actuator_controls=[
-                    roll_rate / 180.0,  # Normalized -1 to 1
-                    pitch_rate / 180.0,
-                    yaw_rate / 180.0,
-                    throttle,
-                    0.0, 0.0, 0.0, 0.0  # Unused channels
-                ]
-            )
-
-        except AttributeError:
-            # Fallback if method doesn't exist (depends on MAVSDK version)
-            pass
-        except Exception as e:
-            # Log error but don't crash control loop
-            pass
+            self._udp_sock.sendto(frame, (self.dcl_host, self.dcl_port))
+        except OSError as exc:
+            self.send_errors += 1
+            print(f"[SCUBA Lab DCL Client] UDP send failed (#{self.send_errors}): {exc}")
 
     async def run_race(self, max_duration: float = 480.0) -> Dict[str, float]:
         """
