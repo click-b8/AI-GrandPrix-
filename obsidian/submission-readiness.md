@@ -34,102 +34,114 @@ date known to us). **Net window:** a few weeks.
   eyeballed. See [[fragilities#The policy head is untrained at deployment]]
   for the resolution notes.
 
-### 2. MAVLink output interprets body rates as attitude angles
+### 2. ~~MAVLink output interprets body rates as attitude angles~~ — RESOLVED 2026-04-23
 
-- **File:** `dcl_mavlink_adapter.py:229-232`
-- **What:** Policy emits rad/s body rates; adapter scales by π/4 and
-  writes them into attitude fields. Drone would fly wrong even if
-  every other piece worked.
-- **Fix:** write body rates (scaled by `MAX_BODY_RATE = 12`) into
-  `SET_ATTITUDE_TARGET`'s `body_roll_rate / body_pitch_rate /
-  body_yaw_rate` fields, and set `type_mask` to ignore the quaternion
-  (`type_mask = 0b10000000` per MAVLink — IGNORE_ATTITUDE).
-- **Effort:** 1 hour including test.
-- **Status:** ☐
+- **File:** `dcl_mavlink_adapter.py`
+- **Was:** policy emitted rad/s body rates; adapter scaled by π/4 and
+  wrote them into attitude fields.
+- **Done on branch `fix/mavlink-complete`:** CTBR semantic rewrite —
+  `body_roll_rate / body_pitch_rate / body_yaw_rate = policy_output *
+  MAX_BODY_RATE (12 rad/s)`. `type_mask = 128` (IGNORE_ATTITUDE).
+  Identity quaternion sent for the attitude field; FC ignores it.
+- **Status:** ✅ Landed on main via `85d2a42` (feature) + `de6e87d`
+  (PR #4 merge).
 
-### 3. MAVLink CRC is zero
+### 3. ~~MAVLink CRC is zero~~ — RESOLVED 2026-04-23
 
-- **File:** `dcl_mavlink_adapter.py:150`
-- **What:** Literal `b"\x00\x00"` instead of CRC-16-CCITT. Any
+- **File:** `dcl_mavlink_adapter.py`
+- **Was:** literal `b"\x00\x00"` instead of CRC-16-CCITT. Any
   spec-compliant parser rejects every message.
-- **Fix:** compute CRC-16-CCITT with the per-message-ID seed byte.
-  Use `pymavlink.generator.mavcrc.x25crc` or a hand-rolled CRC table.
-  Seed bytes for `HEARTBEAT` (239) and `SET_ATTITUDE_TARGET` (49) are
-  fixed in the MAVLink spec.
-- **Effort:** 1 hour including seed-table lookup.
-- **Status:** ☐
+- **Done on branch `fix/mavlink-complete`:** CRC-16-CCITT computed
+  with per-message `crc_extra` seed pulled from pymavlink's generated
+  message classes. Verified via byte-exact roundtrip test against
+  pymavlink's reference encoder.
+- **Status:** ✅ Landed on main via `85d2a42` (feature) + `de6e87d`
+  (PR #4 merge).
 
-### 4. MAVLink payload is malformed
+### 4. ~~MAVLink payload is malformed~~ — RESOLVED 2026-04-23
 
-- **File:** `dcl_mavlink_adapter.py:55-87`
-- **What:** Three competing `struct.pack`s in sequence; final payload
-  has wrong field ordering and no quaternion.
-- **Fix:** replace with either (a) the canonical `struct.pack` for
-  `SET_ATTITUDE_TARGET` as defined in the MAVLink v2 common dialect,
-  or (b) `pymavlink.dialects.v20.common.MAVLink_set_attitude_target_message`
-  and use its `.pack()` method. Option (b) also gets you the CRC seed
-  for free.
-- **Effort:** 1–2 hours, mostly reading the message definition.
-- **Status:** ☐
+- **File:** `dcl_mavlink_adapter.py`
+- **Was:** three competing `struct.pack`s in sequence; final payload
+  had wrong field ordering and no quaternion.
+- **Done on branch `fix/mavlink-complete`:** replaced with
+  `pymavlink.dialects.v20.common.MAVLink_set_attitude_target_message`.
+  Payload field ordering matches spec by construction; monotonically
+  incrementing sequence byte; `MAV_TYPE_QUADROTOR` in heartbeat
+  (was `FIXED_WING`).
+- **Status:** ✅ Landed on main via `85d2a42` (feature) + `de6e87d`
+  (PR #4 merge).
 
-### 5. Advertised model path is wrong everywhere
+### 5. ~~Advertised model path is wrong everywhere~~ — RESOLVED 2026-04-23
 
-- **Files:** `README_SCUBA_LAB.md`, `COMPETITION_CHECKLIST.md`,
-  `README_COMPETITION.md`, `dcl_mavlink_client.py`
-- **What:** Docs point at `~/Desktop/AI GrandPrix/AI_GrandPrix_Models/aigp_distill_final.zip`.
-  File is not there. Real model is at
+- **Files:** `dcl_mavlink_client.py`, `DCL_INTEGRATION.md`.
+- **Was:** docs pointed at `~/Desktop/AI GrandPrix/AI_GrandPrix_Models/aigp_distill_final.zip` —
+  a file that never existed there. Real model was at
   `drone-race-sim/models_release/aigp_distill_final.zip`.
-- **Fix:** either copy the model to `AI_GrandPrix_Models/` (makes the
-  docs true) or update every doc reference to point at
-  `drone-race-sim/models_release/`. The copy is simpler and lets you
-  delete four doc edits.
-- **Effort:** 5 minutes.
-- **Status:** ☐
+- **Done across two branches:** `refactor/deduplicate-root-subdir`
+  moved the model to `./models_release/aigp_distill_final.zip`
+  (canonical root path); `fix/mavlink-complete`'s `run_vq1.py` and
+  updated `dcl_mavlink_client.py` reference the new canonical path
+  with a fail-loudly `_check_model_path()` guard.
+- **Status:** ✅ Landed on main via `582e28d` + `f74981a` (PR #3
+  merge, path move) and `3c68ade` + `de6e87d` (PR #4 merge, client
+  update).
 
-### 6. Vision stream is a placeholder
+### 6. Vision stream is a placeholder — PARTIALLY RESOLVED 2026-04-23
 
-- **File:** `drone-race-sim/dcl_mavlink_client.py:158`
-- **What:** Every control cycle, `vision_frame = np.zeros((48,48,3))`.
-  The model runs on black frames.
-- **Fix:** blocked on DCL simulator release. Once the simulator exposes
-  an image topic, replace the zero frame with the real stream. Budget
-  2–4 hours for integration + validation once the simulator ships.
-- **Effort:** blocked until May 2026; 2–4 h once unblocked.
-- **Status:** ⏳ blocked on DCL sim
+- **File:** `run_vq1.py`.
+- **Was:** every control cycle, `vision_frame = np.zeros((48,48,3))`.
+  The model ran on black frames and emitted a valid-looking MAVLink
+  stream derived from garbage inference.
+- **Done on branch `fix/vision-stub-guard`:** `_get_vision_frame()`
+  now raises `NotImplementedError` unless `--allow-stub-vision` is
+  passed. Running `run_vq1.py` without the flag fails loudly rather
+  than silently emitting commands. The actual vision-integration
+  (replace the stub with a real DCL image-API call) still cannot
+  happen until the DCL simulator ships in May 2026.
+- **Status:** ⏳ Guard landed on main via `21762c5` + `aae8af9`
+  (PR #5 merge). Real vision-integration deferred until DCL sim
+  ships; budget 2–4 h once unblocked.
 
 ## Should-fix-before-submission (not strictly blocking but degrades everything)
 
-### 7. `dcl_mavlink_client.py` uses the wrong MAVLink message
+### 7. ~~`dcl_mavlink_client.py` uses the wrong MAVLink message~~ — RESOLVED 2026-04-23
 
-- **File:** `drone-race-sim/dcl_mavlink_client.py:215-225`
-- **What:** Calls `set_actuator_control`, a different msg_id. DCL spec
-  requires `SET_ATTITUDE_TARGET` or `SET_POSITION_TARGET_LOCAL_NED`.
-- **Fix:** switch to `system.offboard.set_attitude_rate(...)` and
-  `offboard.start()`, or emit raw frames via our own adapter once the
-  adapter is fixed (#2–#4 above).
-- **Effort:** 1 hour.
-- **Status:** ☐
+- **File:** `dcl_mavlink_client.py`.
+- **Was:** `set_actuator_control` (msg_id=139) — not spec-compliant.
+  DCL requires `SET_ATTITUDE_TARGET` or `SET_POSITION_TARGET_LOCAL_NED`.
+- **Done on branch `fix/mavlink-complete`:** client rewritten to
+  delegate to `MAVLinkFrameBuilder` and emit `SET_ATTITUDE_TARGET`
+  frames via a real UDP socket.
+- **Status:** ✅ Landed on main via `3c68ade` (feature) + `de6e87d`
+  (PR #4 merge).
 
-### 8. Silent `except: pass` in the MAVLink send
+### 8. ~~Silent `except: pass` in the MAVLink send~~ — RESOLVED 2026-04-23
 
-- **File:** `drone-race-sim/dcl_mavlink_client.py:226-231`
-- **What:** Two bare excepts swallow all send errors.
-- **Fix:** log + re-raise, or at least log + increment a
-  failure counter. Observability floor.
-- **Effort:** 10 minutes.
-- **Status:** ☐
+- **File:** `dcl_mavlink_client.py`.
+- **Was:** two bare excepts swallowing all send errors.
+- **Done on branch `fix/mavlink-complete`:** removed. Send errors
+  now logged at WARNING and counted in `self.send_errors`.
+- **Status:** ✅ Landed on main via `3c68ade` (feature) + `de6e87d`
+  (PR #4 merge).
 
-### 9. `test_dcl_adapter.py` is tautological
+### 9. ~~`test_dcl_adapter.py` is tautological~~ — RESOLVED 2026-04-23
 
-- **File:** `drone-race-sim/test_dcl_adapter.py`
-- **What:** Points at the wrong model path, and even if it found the
-  model it only checks "load doesn't throw" and "output is in [-1,1]".
-  Both pass with zero-loaded random weights.
-- **Fix:** replace with a test that loads `policy.pth` with
-  `strict=True`, runs a small deterministic rollout from a fixed
-  seed, and compares action sums against a recorded baseline.
-- **Effort:** 2 hours.
-- **Status:** ☐
+- **File:** `test_dcl_adapter.py` (root; moved from `drone-race-sim/`).
+- **Was:** pointed at non-existent path; only checked "load doesn't
+  throw" and "output is in [-1,1]" — both passed with zero-loaded
+  random weights.
+- **Done across branches `fix/policy-weight-load` (initial rewrite),
+  `refactor/deduplicate-root-subdir` (moved to root canonical path),
+  `fix/mavlink-complete` (added `tests/test_mavlink_compliance.py`
+  + `tests/test_vq1_readiness.py`), and `fix/vision-stub-guard`
+  (added CLI subprocess test):** strict-load + Kaiming-floor checks,
+  CTBR semantic assertions, byte-exact pymavlink roundtrip, 300-
+  frame mock receiver, package-hygiene checks (no Desktop paths, no
+  strict=False, no bare except:pass, FPV_TILT_DEG assertion), and
+  end-to-end `--allow-stub-vision` CLI wiring test.
+- **Status:** ✅ 28 tests pass on main. Landed via `fix/policy-weight-load`
+  (earlier session), `582e28d` + `f74981a` (PR #3), `85d2a42` +
+  `de6e87d` (PR #4), and `21762c5` + `aae8af9` (PR #5).
 
 ### 10. `FPV_TILT_DEG` drift in `drone-race-sim/config.py`
 

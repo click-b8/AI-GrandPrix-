@@ -195,6 +195,11 @@ test -n "$(git config user.name)" && test -n "$(git config user.email)" \
 - Install packages into the venv beyond what's in `requirements.txt`.
   If a new dependency is required, add it to `requirements.txt` as
   part of the branch's scope.
+- Use GitHub's "Create a merge commit" / "Squash and merge" /
+  "Rebase and merge" buttons when the plan specifies a local
+  fast-forward + push. The buttons produce different topologies,
+  rewrite identity, or collapse history. If a merge strategy is
+  specified in the prompt, use it literally.
 - Assume a decision that wasn't explicitly made. If the prompt
   doesn't specify an answer to a question the branch raises, STOP
   and ask.
