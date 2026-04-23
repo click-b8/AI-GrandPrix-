@@ -224,6 +224,82 @@ things that probably deserve revisiting.
 
 ---
 
+## 2026-04-23 — Accepted one-time plan-structure deviation
+
+- **Date:** 2026-04-23.
+- **Decision:** accept the process deviation on `fix/mavlink-complete`
+  (commit `3f34b57` + merge `7975ccf` + patch `f433ddf`) as a one-time
+  exception; do not require re-structuring into the originally-planned
+  three-branch sequence (F: protocol compliance, G: body-rate
+  semantics, H: client entry point).
+- **What was deviated from:** the VQ1 execution plan explicitly
+  required MAVLink fixes to be broken into at least two branches
+  ("one for the semantic mismatch, one for the transport/protocol
+  compliance — do not bundle semantics with protocol, they fail
+  differently and need different tests"). A single commit on
+  `fix/mavlink-complete` bundled protocol compliance, CTBR
+  semantics, client rewrite, and tests. A subsequent merge pulled
+  `refactor/deduplicate-root-subdir` into `fix/mavlink-complete`
+  retroactively, rather than sequencing the branches per plan.
+- **Why accept:** the resulting code is correct and well-tested (25
+  passing tests covering CRC, sequence, semantics, byte-exact
+  pymavlink roundtrip, end-to-end mock receiver). The test split is
+  in fact cleaner than what the plan required: `test_mavlink_compliance.py`
+  isolates protocol concerns and `test_vq1_readiness.py` covers
+  semantics + integration. The outcome met the plan's technical
+  intent; the deviation was in process, not in artifact quality.
+- **Root cause:** the prompt the overnight session received was
+  under-specified ("follow the plan"), not the session's execution
+  being sloppy. Vague prompts are themselves a silent-failure
+  category — they produce outputs that look correct, pass tests,
+  match the plan's intent, and whose process deviations only surface
+  under audit. See [[fragilities#Silent failure chain]] for the
+  general category.
+- **Mitigation:** [[session-prompt-template]] was created the same
+  day to force future prompts to specify a single named branch,
+  forbidden vague phrasings, an explicit Evidence-step STOP that
+  auto-mode doesn't override, and a Do-NOT list that names
+  "collapsing multiple plan-branches into one" and "merging
+  another plan-branch into this one retroactively" as scope
+  violations verbatim. Subsequent branches must use the template.
+- **Still-current:** yes. Future branches get specific, single-scope
+  prompts.
+
+---
+
+## 2026-04-23 — Author identity uniformity
+
+- **Date:** 2026-04-23.
+- **Decision:** all commits on this project use the git identity that
+  `git config user.name` and `git config user.email` return from the
+  committer's machine. Non-person identities (team-bot-style names
+  like `SCUBA Lab <scubalab@vq1.local>`, `Bot <bot@...>`, CI
+  service accounts, etc.) are not permitted; Co-Authored-By
+  trailers to bot identities are not permitted.
+- **Why:** the project's established convention across all prior
+  commits was a single-person hostname-derived identity. The three
+  commits on `fix/mavlink-complete` (`3f34b57`, `7975ccf`, `f433ddf`)
+  authored as `SCUBA Lab <scubalab@vq1.local>` broke that
+  convention. Non-person identities in the permanent history:
+  (a) obscure who actually did the work — is this a human
+  collaborator, an AI agent, a shared machine? (b) break
+  `git shortlog -sn` and `git log --author=<person>` searches,
+  (c) set a precedent that erodes the project's one-identity
+  invariant over time.
+- **Mitigation applied same day:** rebased the three SCUBA Lab
+  commits on `fix/mavlink-complete` to the project's standard
+  identity using `git rebase` with an env-filter that rewrites
+  author/committer name+email while preserving timestamps. The
+  `fix/vision-stub-guard` branch was authored with the correct
+  identity from the start; no rewrite needed there.
+- **Codified in:** [[session-prompt-template#Commit identity]],
+  which requires a runnable `git config user.name/user.email`
+  check before the first commit of any branch, and explicitly
+  forbids non-person identities.
+- **Still-current:** yes. Applies to all future branches.
+
+---
+
 ## See also
 
 - [[training]] — the training pipelines these decisions shaped

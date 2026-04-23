@@ -107,9 +107,9 @@ class MAVLinkFrameBuilder:
         header with our own sequence byte, then compute CRC ourselves.
         """
         packed_full = msg.pack(self._mav)
-        # v2 frame layout: STX(1) incompat(1) compat(1) seq(1) sysid(1) compid(1)
-        #   wait -- actual layout after STX: len(1) incompat(1) compat(1) seq(1) ...
-        # Header = 10 bytes total (STX + 9), CRC = last 2 bytes.
+        # MAVLink v2 frame layout (after STX):
+        #   len(1) incompat(1) compat(1) seq(1) sysid(1) compid(1) msgid(3) payload(N) crc(2)
+        # Header = 10 bytes total (STX + 9 fields), CRC = last 2 bytes.
         payload_bytes = packed_full[10:-2]
 
         seq = self._next_seq()
