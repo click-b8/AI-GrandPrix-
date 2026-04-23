@@ -201,12 +201,12 @@ class TestCTBRSemantics:
 # ---------------------------------------------------------------------------
 
 class TestEndToEnd:
-    """30 seconds at 50 Hz, 1500 frames, 0 parse errors, monotonic sequence."""
+    """300 frames against a pymavlink mock receiver: 0 parse errors, monotonic sequence."""
 
-    FRAMES = 300   # reduced from 1500 for test speed; scales proportionally
+    FRAMES = 300   # Notional 6s at 50Hz; runs as fast as the socket allows during pytest
     HZ = 50.0
 
-    def test_mock_receiver_30s_dry_run(self):
+    def test_mock_receiver_dry_run_300_frames(self):
         from dcl_mavlink_adapter import MAVLinkFrameBuilder, MAX_BODY_RATE
         from pymavlink.dialects.v20 import common as mav_common
 
@@ -342,6 +342,92 @@ class TestPackageStructure:
         spec.loader.exec_module(cfg)
         assert cfg.FPV_TILT_DEG == -10, \
             f"FPV_TILT_DEG={cfg.FPV_TILT_DEG}, expected -10 (trained value)"
+
+    def test_stub_vision_raises_by_default(self):
+        """run_vq1._get_vision_frame() must raise NotImplementedError when
+        _allow_stub_vision is False. This is the guard that stops the control
+        loop from silently emitting MAVLink commands based on zero-input
+        inference. See obsidian/fragilities.md §Silent failure chain."""
+        import importlib, sys
+        if 'run_vq1' in sys.modules:
+            importlib.reload(sys.modules['run_vq1'])
+        import run_vq1
+        # Fresh import starts with _allow_stub_vision=False
+        assert run_vq1._allow_stub_vision is False, \
+            "Module-level default of _allow_stub_vision must be False"
+        with pytest.raises(NotImplementedError, match="Vision stream is a stub"):
+            run_vq1._get_vision_frame()
+
+    def test_allow_stub_vision_flag_bypasses_guard(self):
+        """Setting _allow_stub_vision=True (as --allow-stub-vision does in
+        main) must let _get_vision_frame() return the black-frame stub
+        unchanged. Covers the dev/testing path."""
+        import importlib, sys
+        if 'run_vq1' in sys.modules:
+            importlib.reload(sys.modules['run_vq1'])
+        import run_vq1
+        run_vq1._allow_stub_vision = True
+        try:
+            frame = run_vq1._get_vision_frame()
+            assert frame.shape == (48, 48, 3), f"shape={frame.shape}"
+            assert frame.dtype == np.uint8, f"dtype={frame.dtype}"
+            assert frame.sum() == 0, "stub frame must be all zeros"
+        finally:
+            run_vq1._allow_stub_vision = False  # restore default for other tests
+
+    def test_cli_flag_actually_enables_stub(self):
+        """End-to-end CLI wiring: `python3 run_vq1.py --allow-stub-vision`
+        must NOT raise NotImplementedError on the first vision pull, and
+        MUST log the stub-active WARNING.
+
+        The two module-attribute tests above prove the guard and the setter
+        both work, but neither proves the CLI reaches the setter. Without
+        this test, a future refactor (e.g., wrapping main in def main())
+        could quietly turn the assignment into a function-local that the
+        guard never sees, and module-attribute tests would still pass.
+        """
+        import subprocess
+        distill = os.path.join(ROOT, 'models_release', 'aigp_distill_final.zip')
+        if not os.path.exists(distill):
+            pytest.skip(f"model zip absent: {distill}")
+
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(ROOT, "run_vq1.py"),
+             "--allow-stub-vision",
+             "--hz", "50",
+             "--port", "19999"],  # unbound UDP port; sendto is best-effort, silently drops
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=ROOT,
+        )
+        try:
+            # Model load + control loop startup + first few vision pulls.
+            # 6s is generous on M4; adjust up if this flakes in CI.
+            stdout, stderr = proc.communicate(timeout=6.0)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+
+        combined = (stdout or b'').decode(errors='replace') + \
+                   (stderr or b'').decode(errors='replace')
+
+        # If the flag didn't wire, the guard fires on first pull → traceback.
+        assert "NotImplementedError" not in combined, (
+            "CLI did not wire --allow-stub-vision; the guard raised "
+            "NotImplementedError. A plain `_allow_stub_vision = ...` "
+            "inside main() creates a function-local variable; use "
+            "globals()['_allow_stub_vision'] = ... instead.\n"
+            f"--- combined output ---\n{combined}"
+        )
+        # If the flag wired, the run() function logs this WARNING.
+        assert "STUB (black frames)" in combined, (
+            "Expected stub-active WARNING from run(); got:\n"
+            f"{combined}"
+        )
 
 
 # ---------------------------------------------------------------------------
