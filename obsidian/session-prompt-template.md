@@ -176,6 +176,14 @@ test -n "$(git config user.name)" && test -n "$(git config user.email)" \
 - Rebase a branch that has been pushed, unless explicitly authorized
   for an author-identity rewrite (and show the rebase command
   before executing).
+- Retry any history-modifying command without explicit user
+  re-authorization, even when the retry is technically idempotent
+  under `--force-with-lease` or similar safety mechanisms. Transient
+  failures are exactly when a second pair of eyes is cheap insurance.
+  When the user authorizes a retry, they should specify the
+  diagnostic evidence required (e.g., `ssh-add -l`, `git fetch origin`,
+  `ssh -T git@host`) that would confirm the failure's cause before
+  retrying.
 - Create branches other than the named branch. If the scope truly
   requires splitting, STOP and ask the user to revise the plan.
   Collapsing multiple plan-branches into one, spawning side
