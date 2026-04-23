@@ -3,7 +3,7 @@
 SCUBA LAB - VQ1 Competition Entry Point
 ========================================
 Usage:
-    python3 run_vq1.py [--host 127.0.0.1] [--port 14540] [--hz 50]
+    python3 run_vq1.py [--host 127.0.0.1] [--port 14540] [--hz 50] [--allow-stub-vision]
 
 This is the single canonical entry point for VQ1 submission.
 It loads the distilled vision model, connects to the DCL simulator
@@ -18,9 +18,16 @@ Control interface:
   thrust = policy_output[0] in [0, 1]
 
 Vision:
-  BLOCKED until DCL simulator ships (May 2026).
-  Currently feeds np.zeros((48, 48, 3)) — the policy runs on black frames.
-  Replace the _get_vision_frame() stub below once the DCL image API is known.
+  BLOCKED until DCL simulator ships (May 2026). _get_vision_frame() raises
+  NotImplementedError by default so this script cannot accidentally run
+  against zero-filled frames and emit plausible-looking but garbage MAVLink
+  control commands.
+
+  For local testing/development only, pass --allow-stub-vision to permit
+  the black-frame stub path. Submission must NOT use this flag.
+
+  When the DCL simulator ships, replace _get_vision_frame() with the real
+  image-API call; the guard then falls out automatically.
 
 What to ask DCL when the simulator ships (from obsidian/submission-readiness.md):
   1. Exact MAVLink message accepted for control (we use SET_ATTITUDE_TARGET).
@@ -64,9 +71,25 @@ def _check_model_path(path: str):
 # Vision stream stub — replace when DCL simulator ships
 # ---------------------------------------------------------------------------
 
+# Gate for the stub path. main() sets this to True when --allow-stub-vision
+# is passed. Left False by default so any call site (direct import, test
+# harness, or the production control loop) raises loudly instead of silently
+# feeding zeros into the policy and emitting plausible-looking MAVLink.
+# Submission must leave this False; replace _get_vision_frame() with a real
+# DCL image-API call when the sim ships and the guard becomes unreachable.
+_allow_stub_vision: bool = False
+
+
 def _get_vision_frame() -> np.ndarray:
     """
     STUB: Returns a black frame until the DCL simulator image API is known.
+
+    Guarded by the module-level _allow_stub_vision flag. By default, raises
+    NotImplementedError — running the control loop against zero frames would
+    emit a spec-compliant MAVLink stream of body-rate commands derived from
+    constant-zero inference, which is the exact silent-failure pattern the
+    project has been fighting (see obsidian/fragilities.md §Silent failure
+    chain). Pass --allow-stub-vision on the command line for local dev only.
 
     When DCL ships the simulator, replace this function body with:
         frame = <DCL image API call>
@@ -75,6 +98,16 @@ def _get_vision_frame() -> np.ndarray:
     The policy was trained on 48x48 RGB + event channels. The adapter
     handles resizing and zero-pads the event channels automatically.
     """
+    if not _allow_stub_vision:
+        raise NotImplementedError(
+            "Vision stream is a stub (returns zero-filled black frames). "
+            "Running the control loop against this would emit a valid-looking "
+            "MAVLink stream of constant body-rate commands derived from "
+            "garbage inference — the silent-failure pattern the project has "
+            "explicit guardrails against. Replace _get_vision_frame() with "
+            "the real DCL image-API call when the simulator ships, or pass "
+            "--allow-stub-vision on the command line for local dev only."
+        )
     return np.zeros((48, 48, 3), dtype=np.uint8)
 
 
@@ -129,7 +162,13 @@ async def run(host: str, port: int, hz: float):
     )
 
     logger.info("Starting control loop -> %s:%d at %.0f Hz", host, port, hz)
-    logger.info("Vision stream: STUB (black frames) — replace _get_vision_frame() when DCL sim ships")
+    if _allow_stub_vision:
+        logger.warning(
+            "Vision stream: STUB (black frames) — --allow-stub-vision is active. "
+            "DO NOT use for VQ1 submission."
+        )
+    else:
+        logger.info("Vision stream: real _get_vision_frame() implementation detected.")
 
     try:
         await adapter.run_loop(
@@ -157,6 +196,20 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="DCL simulator UDP host")
     parser.add_argument("--port", type=int, default=14540, help="DCL simulator UDP port")
     parser.add_argument("--hz", type=float, default=50.0, help="Control command rate (50-120 Hz)")
+    parser.add_argument(
+        "--allow-stub-vision",
+        action="store_true",
+        help="Permit running against zero-filled vision frames. Local dev/testing ONLY — "
+             "submission must NOT use this flag. See obsidian/fragilities.md.",
+    )
     args = parser.parse_args()
+
+    # Assign explicitly via globals() so this line remains a module-level
+    # update even if a future refactor wraps the __main__ block in a
+    # def main() (in which case a plain `_allow_stub_vision = ...` would
+    # silently create a function-local that the guard never sees).
+    # Tests exercise this via subprocess, not just module-attribute
+    # patching — see TestPackageStructure.test_cli_flag_actually_enables_stub.
+    globals()['_allow_stub_vision'] = args.allow_stub_vision
 
     asyncio.run(run(args.host, args.port, args.hz))
