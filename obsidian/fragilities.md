@@ -793,6 +793,65 @@ coverage is enough.
 
 ---
 
+## `train_fast_safe.py` instantiates curriculum but never wires it to model.learn
+
+- Severity: low for the project today (the script is unused
+  archive-side, classified (c) status unclear in the provenance
+  audit). Latent for any future revival of the script.
+- Surfaced during: training-script provenance audit, 2026-04-27.
+  See [[training-script-provenance]] §8 and
+  [[training-script-provenance-self-review]] §5.
+
+The script's name implies it produces a fast, safe-to-train
+model. Inspection shows the curriculum callback (which is the
+part that's supposed to deliver the "safe" guarantee — gradual
+difficulty progression with reset-on-failure) is instantiated
+but never passed to the SB3 `model.learn()` call. Training
+proceeds as a flat run with no curriculum effect. The script's
+output (or its absence — `trained_fast_safe/` has a `best_model`
+but no final, no checkpoints) cannot be trusted as "safely
+trained" in the way the script's name implies.
+
+This is the silent-failure-chain pattern in training code:
+defensive-looking structure (a curriculum is defined!) composes
+with a wiring gap (it's never actually used) into a script that
+runs without errors and produces output, while delivering none
+of the guarantees its name suggests.
+
+Resolution: if the script is ever revived for active use, wire
+the curriculum callback into the `model.learn(callback=...)`
+argument. If the script is left in archive, this entry serves as
+the warning for any future reader who would otherwise assume
+"fast_safe" means what it sounds like.
+
+---
+
+## `train_domain_robust.py` wraps training in broad `except Exception`
+
+- Severity: low for the project today (the script is unused
+  archive-side, classified (c) status unclear in the provenance
+  audit). Latent for any future revival.
+- Surfaced during: training-script provenance audit, 2026-04-27.
+  Wording corrected by self-review pass: this is *broad
+  continue-on-error*, not silent-failure — the except block prints
+  `❌ Training error: {e}` and a full traceback before continuing
+  to the next model in the loop. Errors are visible.
+
+The concern is the breadth and the continue-on-error shape, not
+stealth. A NaN explosion, a divergence, an OOM, a corrupted
+checkpoint — all get caught by the same handler, all get
+printed, all get continued past. Real training failures that
+warrant stopping the run don't stop the run; they print and the
+loop moves on to the next model.
+
+Per the project's "observability first; re-raise or return a
+typed result" guardrail, the catch should be narrowed (e.g.,
+`except FileNotFoundError`) or replaced with logging + re-raise.
+If this script is ever revived for real use, that block needs to
+be tightened.
+
+---
+
 ## See also
 
 - [[submission-readiness]] — the operational view of the same list

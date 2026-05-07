@@ -362,6 +362,39 @@ things that probably deserve revisiting.
 
 ---
 
+## 2026-04-28 — Read-only autonomous Claude Code tasks accepted as viable workflow
+
+- **Date:** 2026-04-28.
+- **Decision:** read-only autonomous Claude Code investigation
+  tasks are accepted as a viable workflow for bounded scopes,
+  subject to specific constraints.
+- **Constraints (non-negotiable for any future autonomous run):**
+  - No commits, no pushes, no git state changes.
+  - No code modifications outside a single named output document.
+  - No deletes, no installs, no test runs, no training runs.
+  - Explicit halt-marker mechanism: if Claude encounters
+    something outside expected scope, it writes
+    `PROMINENT_ISSUE_FOUND.md` at repo root and stops
+    investigation rather than incorporating the surprise.
+  - Output document remains uncommitted on disk for human review
+    when the user returns; user decides whether to commit,
+    revise, or discard.
+  - Separate self-review pass produced as its own document (not
+    edits to the original) so the audit chain is visible.
+- **Why:** the training-script provenance audit ran overnight
+  2026-04-27 → 2026-04-28 under these constraints and produced a
+  useful artifact. The self-review pass on 2026-04-28 caught six
+  revisions needed before commit — meaning the discipline of
+  "two passes plus human review" works in this workflow shape.
+- **Limits:** NOT validated for tasks that touch code, tests,
+  training, or any git state. Only validated for
+  read-and-write-a-doc investigation patterns. Other
+  autonomous-task shapes need their own validation.
+- **Codified in:** this entry; future autonomous prompts should
+  reference it for the constraint list.
+
+---
+
 ## See also
 
 - [[training]] — the training pipelines these decisions shaped
