@@ -192,18 +192,40 @@ class SCUBALabAdapter:
         else:
             image = visual_data
 
-        # Model trained with event camera: 14 channels total
-        # Structure: (RGB 3ch + Events 4ch) stacked 2x = 14 channels
-        # DCL provides RGB only, so pad with zeros for event channels
-        rgb_frame = image.astype(np.float32)  # Keep as 0-255 uint8 range
-        event_channels = np.zeros((4, 48, 48), dtype=np.float32)
+        # Build image input for model.
+        #
+        # Original distill model (aigp_distill_final): EVENT_CAMERA_ENABLED=True
+        #   Input shape: (14, 48, 48) — 2 stacked frames × (3 RGB + 4 event channels)
+        #   Zero-pad event channels at inference since DCL provides RGB only.
+        #
+        # Fine-tuned model (aigp_finetune_tilt_final): EVENT_CAMERA_ENABLED=False
+        #   Input shape: (6, 48, 48) — 2 stacked frames × 3 RGB channels only.
+        #   No zero-padding needed.
+        #
+        # We detect which model is loaded by checking the feature extractor's
+        # expected input channels (first conv layer in_channels).
+        try:
+            expected_channels = self.features_extractor.coarse_cnn[0].in_channels
+        except AttributeError:
+            expected_channels = 14  # default to original model
 
-        # Stack: first frame (RGB + zero events), second frame (RGB + zero events)
-        frame_with_events = np.concatenate([rgb_frame, event_channels], axis=0)  # 7 channels
-        image_14ch = np.concatenate([frame_with_events, frame_with_events], axis=0)  # 14 channels
+        rgb_frame = image.astype(np.float32)  # (3, 48, 48)
 
-        # Convert to uint8 for model
-        image_14ch = image_14ch.astype(np.uint8)
+        if expected_channels == 14:
+            # Original model: pad 4 zero event channels per frame, stack 2 frames
+            event_channels = np.zeros((4, 48, 48), dtype=np.float32)
+            frame_with_events = np.concatenate([rgb_frame, event_channels], axis=0)  # 7ch
+            image_out = np.concatenate([frame_with_events, frame_with_events], axis=0)  # 14ch
+        elif expected_channels == 6:
+            # Fine-tuned model: RGB only, stack 2 frames
+            image_out = np.concatenate([rgb_frame, rgb_frame], axis=0)  # 6ch
+        else:
+            # Unknown — stack RGB frames and warn
+            import warnings
+            warnings.warn(f"Unexpected CNN in_channels={expected_channels}; defaulting to RGB stack")
+            image_out = np.concatenate([rgb_frame, rgb_frame], axis=0)
+
+        image_14ch = image_out.astype(np.uint8)
 
         # Build state vector from telemetry (19D state)
         position = np.array(telemetry.get('position', [0, 0, 0]), dtype=np.float32)

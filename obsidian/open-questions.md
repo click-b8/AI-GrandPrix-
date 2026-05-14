@@ -56,13 +56,13 @@ release and consider whether to fine-tune with a tighter
 
 ## 🟡 Affects VQ1 performance
 
-### Does the zero-padding of event channels hurt deployment performance?
+### ~~Does the zero-padding of event channels hurt deployment performance?~~ RESOLVED 2026-05-14
 
-The policy was trained with simulated event channels; at inference,
-we zero them. This has never been tested end-to-end. Once the adapter
-load is fixed ([[fragilities#The policy head is untrained at deployment]]),
-run a side-by-side: policy with simulated events vs policy with
-zeros. Record the delta in [[experiments-log]].
+Resolved by decision: EVENT_CAMERA_ENABLED set to False in fine-tune config.
+DCL provides RGB only; the fine-tuned model (aigp_finetune_tilt_final) trains
+without event channels entirely, removing the deployment gap. The adapter
+auto-detects 6ch vs 14ch input based on CNN in_channels. Original distill model
+still falls back to zero-padding for compatibility.
 
 ### What is the trained policy's actual behavior on black images?
 

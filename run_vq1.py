@@ -51,7 +51,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_vq1")
 
-CANONICAL_MODEL_PATH = os.path.join(os.path.dirname(__file__), "models_release", "aigp_distill_final.zip")
+# Use the fine-tuned model (FPV_TILT=+20, EVENT_CAMERA=False) if available,
+# otherwise fall back to original distill model.
+_FINETUNE_PATH = os.path.join(os.path.dirname(__file__), "models_release", "aigp_finetune_tilt_final.zip")
+_DISTILL_PATH  = os.path.join(os.path.dirname(__file__), "models_release", "aigp_distill_final.zip")
+CANONICAL_MODEL_PATH = _FINETUNE_PATH if os.path.exists(_FINETUNE_PATH) else _DISTILL_PATH
 
 
 def _check_model_path(path: str):
