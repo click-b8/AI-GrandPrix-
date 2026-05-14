@@ -137,3 +137,19 @@ For benchmark/comparison (privileged sim, does not need vision):
 - [[deployment]] — how any of them reach a simulator
 - [[fragilities]] — why the advertised path is wrong and the weights don't load
 - [[experiments-log]] — checkpoint ladders and what we have logs for
+
+## aigp_finetune_tilt_final.zip — VQ1 candidate (pending)
+
+- **Path (target):** `drone-race-sim/models_release/aigp_finetune_tilt_final.zip`
+- **Status:** Training in progress — HPC job 4654271, FAU shortq7-gpu
+- **Type:** Vision-based PPO, distilled via DAgger from state expert
+- **Training:** `train_finetune_tilt.py` (wrapper over `train_distill.py`),
+  15M steps, warm-start from `trained_vision_events` if available else scratch
+- **Teacher:** `trained_state_expert/aigp_state_final.zip`
+- **Config delta from aigp_distill_final:**
+  - `FPV_TILT_DEG`: 0° → **+20°** (VADR-TS-002 §3.8 match)
+  - `EVENT_CAMERA_ENABLED`: True → **False** (RGB-only deployment)
+  - Input channels: 14 → **6** (3 RGB × 2 stacked frames)
+- **Deployable:** Yes, once training completes and copied to `models_release/`
+- **Adapter:** `dcl_adapter.py` auto-detects 6ch input via CNN `in_channels`
+- **Entry point:** `run_vq1.py` prefers this over `aigp_distill_final` when present

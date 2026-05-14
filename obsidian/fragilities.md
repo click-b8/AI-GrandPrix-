@@ -858,3 +858,44 @@ be tightened.
 - [[deployment]] — where each broken piece lives in the code
 - [[decisions-log]] — why `dcl_adapter.py` uses direct weight loading
 - [[open-questions]] — the items flagged as unresolved above
+
+---
+
+## Camera tilt trained at wrong value (VADR-TS-002 §3.8)
+
+- **Severity:** high — 20–30° camera geometry mismatch at deployment
+- **Measurement status:** resolved by investigation (2026-05-14)
+- **Affected files:** `config.py`, all training scripts
+
+### What actually happened
+
+VADR-TS-002 §3.8 specifies the DCL simulator camera is tilted **+20°
+upward**. Three different values existed across the project:
+
+| Location | Value | Status |
+|---|---|---|
+| Root `config.py` | -10° | Wrong — now corrected to +20° |
+| HPC `drone-race-sim/config.py` | 0° | What the models were actually trained at |
+| VADR-TS-002 §3.8 | +20° | Ground truth |
+
+The obsidian audit (2026-04-21) concluded the deployed model was trained
+at -10° based on git history. That conclusion was wrong. The HPC config
+had an uncommitted local edit to 0°, and training ran from the HPC clone.
+The deployed `aigp_distill_final` was trained at **0°**, not -10°.
+
+The true gap to the spec is therefore **20°** (0° trained vs +20° spec),
+not 30°. Still significant enough to require retraining.
+
+### Resolution
+
+- `config.py` (root): `FPV_TILT_DEG` updated to `+20` (2026-05-14)
+- HPC `drone-race-sim/config.py`: updated to `+20` via sed (2026-05-14)
+- Fine-tune job 4654271 training at +20° with `EVENT_CAMERA_ENABLED=False`
+- Output: `trained_finetune_tilt/aigp_distill_final.zip`
+
+### Related
+
+- `EVENT_CAMERA_ENABLED` also corrected to `False` in same training run —
+  DCL provides RGB only, removing the zero-padding deployment gap
+- See [[experiments-log#Active training run]] for job details
+- See [[models#aigp_finetune_tilt_final.zip]] for artifact details
