@@ -9,16 +9,16 @@
 
 ```
 DCL Simulator
-    ↓
+    
 [Telemetry + Visual Stream]
-    ↓
+    
 DCL Adapter (dcl_adapter.py)
-    ↓
+    
 Distilled Vision Model
 (aigp_distill_final.zip - 50M steps training)
-    ↓
+    
 [Throttle, Roll, Pitch, Yaw]
-    ↓
+    
 DCL Simulator Execution
 ```
 
@@ -38,9 +38,9 @@ DCL Simulator Execution
 ## Files
 
 ### Main Integration
-- **`dcl_adapter.py`** - Converts DCL inputs → model inputs/outputs
+- **`dcl_adapter.py`** - Converts DCL inputs  model inputs/outputs
   - `SCUBALabAdapter` class handles end-to-end inference
-  - `process_observation()` - DCL data → model format
+  - `process_observation()` - DCL data  model format
   - `predict_action()` - Model inference
   - `action_to_dcl_command()` - Output conversion
   - `step()` - Single inference cycle
@@ -152,5 +152,5 @@ python3 test_dcl_adapter.py
 
 ---
 
-**Status:** READY FOR DCL INTEGRATION ✓
+**Status:** READY FOR DCL INTEGRATION 
 **Last Updated:** April 3, 2026

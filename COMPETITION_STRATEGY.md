@@ -3,7 +3,7 @@
 
 ---
 
-## 🎯 COMPETITION OBJECTIVES
+##  COMPETITION OBJECTIVES
 1. **Fastest time** - Beat all competitors
 2. **Most reliable** - 8/8 gate completion
 3. **Sim-to-real ready** - Works on actual drones
@@ -11,23 +11,23 @@
 
 ---
 
-## 📊 CURRENT ASSETS
+##  CURRENT ASSETS
 
 ### Models Ready
-- ✅ `aigp_8gates_final.zip` - Fast, aggressive (state-based)
-- ✅ `aigp_racer_final.zip` - Championship tuned (state-based)
-- ✅ `aigp_distill_final.zip` - Vision-based, deployable (13MB)
-- 🔄 `train_fast_safe.py` - Training now (vision + FPV + events)
+-  `aigp_8gates_final.zip` - Fast, aggressive (state-based)
+-  `aigp_racer_final.zip` - Championship tuned (state-based)
+-  `aigp_distill_final.zip` - Vision-based, deployable (13MB)
+-  `train_fast_safe.py` - Training now (vision + FPV + events)
 
 ### Infrastructure
-- ✅ HPC training (proven working)
-- ✅ Local training pipeline
-- ✅ Sim-to-real framework
-- ✅ Domain randomization
+-  HPC training (proven working)
+-  Local training pipeline
+-  Sim-to-real framework
+-  Domain randomization
 
 ---
 
-## 🔴 CRITICAL GAPS & FIXES
+##  CRITICAL GAPS & FIXES
 
 ### Gap 1: Model Deployment Uncertainty
 **Problem:** HPC models work on HPC, but architecture mismatch on Mac. Real drone deployment untested.
@@ -57,7 +57,7 @@
 2. **Optimize for speed (if needed)**
    - Use `aigp_8gates_final.zip` (aggressive, faster)
    - Or distill to smaller model (faster inference)
-   - Fine-tune with speed rewards: `REWARD_TIME_PENALTY = -1.0` → `-5.0`
+   - Fine-tune with speed rewards: `REWARD_TIME_PENALTY = -1.0`  `-5.0`
 
 3. **Hardware optimizations**
    - Quantize models (PyTorch quantization)
@@ -78,17 +78,17 @@
 2. **If completion < 95%:**
    - Continue training with `train_fast_safe.py` (adds safety)
    - Use curriculum learning to master difficult gates
-   - Ensemble voting (multiple models → best action)
+   - Ensemble voting (multiple models  best action)
 
 3. **Robustness**
-   - Domain randomization: mass ±15%, drag, latency
+   - Domain randomization: mass 15%, drag, latency
    - Test with perturbed initial conditions
    - Validate crash detection works
 
 ---
 
 ### Gap 4: Actual Drone Hardware
-**Problem:** Simulation ≠ Reality. Real hardware has latency, sensor noise, actuator limits.
+**Problem:** Simulation  Reality. Real hardware has latency, sensor noise, actuator limits.
 
 **FIX:**
 1. **Immediate priority: Get drone time**
@@ -108,10 +108,10 @@
 
 ---
 
-## 🚀 ADJUSTED GAME PLAN (Week-by-Week)
+##  ADJUSTED GAME PLAN (Week-by-Week)
 
 ### **WEEK 1 (THIS WEEK)**
-- [ ] **Test on real drone** ← CRITICAL
+- [ ] **Test on real drone**  CRITICAL
   - Deploy `aigp_distill_final.zip`
   - Measure lap time, gate completion
   - Log sensor data for simulation tuning
@@ -154,11 +154,11 @@
   - Test deployment workflow
 
 ### **WEEK 4 (COMPETITION)**
-- [ ] Deploy & compete 🏆
+- [ ] Deploy & compete 
 
 ---
 
-## 🎯 RECOMMENDED SUBMISSION MODEL
+##  RECOMMENDED SUBMISSION MODEL
 
 **PRIMARY:** `aigp_racer_final.zip`
 - Reason: 100M steps of championship tuning
@@ -174,7 +174,7 @@
 
 ---
 
-## 🔧 CRITICAL UNKNOWNS TO RESOLVE
+##  CRITICAL UNKNOWNS TO RESOLVE
 
 | Unknown | Impact | How to Check |
 |---------|--------|-------------|
@@ -187,23 +187,23 @@
 
 ---
 
-## 💡 COMPETITIVE ADVANTAGES
+##  COMPETITIVE ADVANTAGES
 
 ### Current
-✅ Vision-based model (sim-to-real friendly)
-✅ 100M+ training steps (well-tuned)
-✅ Event camera simulation (advanced perception)
-✅ Domain randomization (robust)
+ Vision-based model (sim-to-real friendly)
+ 100M+ training steps (well-tuned)
+ Event camera simulation (advanced perception)
+ Domain randomization (robust)
 
 ### Potential
-🔄 Real drone data (if available)
-🔄 Hardware-specific fine-tuning
-🔄 Ensemble voting (multiple models)
-🔄 Distilled smaller models (faster)
+ Real drone data (if available)
+ Hardware-specific fine-tuning
+ Ensemble voting (multiple models)
+ Distilled smaller models (faster)
 
 ---
 
-## ⚠️ RISK MITIGATION
+##  RISK MITIGATION
 
 | Risk | Mitigation |
 |------|-----------|
@@ -215,22 +215,22 @@
 
 ---
 
-## 🏁 SUCCESS CRITERIA
+##  SUCCESS CRITERIA
 
 **To WIN:**
-1. ✅ Fastest lap time (beat all competitors)
-2. ✅ 100% gate completion (8/8 every run)
-3. ✅ Robust to variations (hardware, weather, etc.)
-4. ✅ Deployable on actual drone
+1.  Fastest lap time (beat all competitors)
+2.  100% gate completion (8/8 every run)
+3.  Robust to variations (hardware, weather, etc.)
+4.  Deployable on actual drone
 
 **Minimum to PLACE:**
-1. ✅ Reliable 8/8 completion
-2. ✅ Top 3 speed
-3. ✅ No crashes
+1.  Reliable 8/8 completion
+2.  Top 3 speed
+3.  No crashes
 
 ---
 
-## 📋 ACTION ITEMS (Immediate)
+##  ACTION ITEMS (Immediate)
 
 - [ ] Get access to actual drone this week
 - [ ] Test `aigp_distill_final.zip` on hardware

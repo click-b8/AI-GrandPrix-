@@ -92,7 +92,7 @@ class SCUBALabAdapter:
             self._load_weights(weights_path)
 
         # Only reached if _load_weights succeeded (strict=True raises on any mismatch).
-        print(f"[SCUBA Lab] ✓ Feature extractor + policy head loaded (strict=True)")
+        print(f"[SCUBA Lab] [OK] Feature extractor + policy head loaded (strict=True)")
 
     def _load_weights(self, weights_path: str):
         """Load weights from the trained policy.pth with strict=True.

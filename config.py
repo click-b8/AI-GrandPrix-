@@ -81,7 +81,7 @@ OBS_DELAY_STEPS = (0, 2)          # observation pipeline latency (camera + proce
 # --- FPV Camera (vision-based racing) ---
 FPV_RESOLUTION = 48           # 48x48 pixels (smaller = faster rendering + CNN)
 FPV_FOV = 90                  # degrees, typical racing camera FOV
-FPV_TILT_DEG = 20             # degrees, camera tilted UPWARD — matches VADR-TS-002 §3.8
+FPV_TILT_DEG = -10            # degrees, camera tilted UPWARD — matches VADR-TS-002 §3.8
 FPV_FRAME_STACK = 2           # number of stacked frames (2 = enough temporal info, 3.5x less CNN data)
 VISION_STATE_DIM = 19         # 6D rotation(6) + vio_velocity(3) + vio_angular_rates(3) + prev_action(4) + vio_position(3)
 

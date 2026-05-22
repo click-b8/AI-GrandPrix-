@@ -2,29 +2,29 @@
 
 **Team Name:** Scuba Lab  
 **Competition:** Anduril AI Grand Prix (A2RL x DCL 2025-2026)  
-**Status:** ✓ Training Complete | ✓ Adapter Ready | ⏳ Awaiting DCL Simulator (May 2026)
+**Status:**  Training Complete |  Adapter Ready |   Awaiting DCL Simulator (May 2026)
 
 ---
 
-## 📊 Competition Timeline
+##  Competition Timeline
 
 | Stage | Date | Status |
 |-------|------|--------|
-| **Model Training** | Mar 2026 | ✅ Complete (200M+ steps) |
-| **Virtual Qualifier 1** | May 2026 | 📅 Submitted (simple/desaturated) |
-| **Virtual Qualifier 2** | Jun 2026 | 📅 Scheduled (complex/low SNR) |
-| **Physical Qualifier** | Sep 2026 | 📅 Southern California |
-| **Championship** | Nov 2026 | 📅 Ohio |
+| **Model Training** | Mar 2026 |  Complete (200M+ steps) |
+| **Virtual Qualifier 1** | May 2026 |  Submitted (simple/desaturated) |
+| **Virtual Qualifier 2** | Jun 2026 |  Scheduled (complex/low SNR) |
+| **Physical Qualifier** | Sep 2026 |  Southern California |
+| **Championship** | Nov 2026 |  Ohio |
 
 ---
 
-## 🚀 Trained Models
+##  Trained Models
 
 ### Primary Model: `aigp_distill_final.zip`
 - **Training:** 50M steps PPO (Stable Baselines3)
 - **Architecture:** Distilled vision policy (post-training on state expert)
 - **Input:** 
-  - Vision: 48×48 FPV camera (RGB + simulated event channels = 14 total)
+  - Vision: 4848 FPV camera (RGB + simulated event channels = 14 total)
   - Telemetry: 19D state vector (position, velocity, orientation, etc.)
 - **Output:** 4D continuous control (throttle, roll, pitch, yaw)
 - **Size:** 13 MB
@@ -37,7 +37,7 @@
 
 ---
 
-## 📋 Official Competition Specifications
+##  Official Competition Specifications
 
 **Technical Spec Document:** VADR-TS-001 Issue 00.01 (2026-03-09)
 
@@ -45,14 +45,14 @@
 - **Protocol:** MAVLink v2 over UDP
 - **Control Interface:** SET_POSITION_TARGET_LOCAL_NED or SET_ATTITUDE_TARGET messages
 - **Physics:** 120 Hz simulation, 50-120 Hz command rate
-- **Timing:** Heartbeat ≥2 Hz, TIMESYNC support
+- **Timing:** Heartbeat 2 Hz, TIMESYNC support
 - **Max Duration:** 8 minutes per run
 - **Compliance:** Zero human intervention tolerance
 - **Courses:** Deterministic (identical across all teams)
 
 ---
 
-## 🔧 DCL Integration Framework
+##  DCL Integration Framework
 
 ### Core Components
 
@@ -88,7 +88,7 @@ command = adapter.step(telemetry, visual_frame)
 
 ---
 
-## 📋 Virtual Qualifier 1 Specifications
+##  Virtual Qualifier 1 Specifications
 
 **Format:** Structured 3D racecourse with standardized gates  
 **Scoring:** Time-based (fastest valid run wins)  
@@ -96,14 +96,14 @@ command = adapter.step(telemetry, visual_frame)
 **Conditions:** Desaturated imagery, realistic physics  
 
 **Why Scuba Lab is positioned to win:**
-- ✅ Model trained on complex scenarios (curriculum from easy → hard)
-- ✅ Robust to motion blur and noisy observations
-- ✅ Event camera simulation provides edge detection in blur
-- ✅ 50M steps of dense RL training (far more than baseline agents)
+-  Model trained on complex scenarios (curriculum from easy  hard)
+-  Robust to motion blur and noisy observations
+-  Event camera simulation provides edge detection in blur
+-  50M steps of dense RL training (far more than baseline agents)
 
 ---
 
-## 🛠️ Deployment Checklist
+##   Deployment Checklist
 
 - [x] Train distilled vision model (50M steps)
 - [x] Build DCL adapter framework
@@ -118,18 +118,18 @@ command = adapter.step(telemetry, visual_frame)
 
 ---
 
-## 💻 Hardware Requirements
+##  Hardware Requirements
 
 - **Minimum:** Mid-tier PC with GTX 1660 or better
 - **Recommended:** RTX 2060 Super or higher
 - **RAM:** 16GB
 - **Compute:** ~100 TOPS
 
-The adapter is optimized for competitive latency—typical inference is ~50ms on CPU, <10ms on GPU.
+The adapter is optimized for competitive latencytypical inference is ~50ms on CPU, <10ms on GPU.
 
 ---
 
-## 📝 Code Ownership & IP
+##  Code Ownership & IP
 
 - **Team retains:** Full IP ownership of algorithm, source code, documentation
 - **Anduril receives:** Permission to use code for competition operations only (duration: competition period)
@@ -137,7 +137,7 @@ The adapter is optimized for competitive latency—typical inference is ~50ms on
 
 ---
 
-## 🔄 Next Steps
+##  Next Steps
 
 1. **May 2026:** Download DCL simulator toolkit
 2. **Integrate:** Replace mock DCL calls in adapter with actual API
@@ -147,7 +147,7 @@ The adapter is optimized for competitive latency—typical inference is ~50ms on
 
 ---
 
-## 📚 References
+##  References
 
 - **Training Code:** train_distill.py, train_state.py
 - **Config:** config.py (drone physics, observation/action spaces)
@@ -158,6 +158,6 @@ The adapter is optimized for competitive latency—typical inference is ~50ms on
 ---
 
 **Status Summary:**  
-✨ Scuba Lab is **ready to compete**. Models are trained. Adapter is tested. Now waiting for DCL to release the May 2026 simulator toolkit to begin Virtual Qualifier 1 evaluation.
+ Scuba Lab is **ready to compete**. Models are trained. Adapter is tested. Now waiting for DCL to release the May 2026 simulator toolkit to begin Virtual Qualifier 1 evaluation.
 
-🏆 **Goal:** Dominate Virtual Qualifier 1 (simple conditions), optimize for Qualifier 2, and secure championship title.
+  **Goal:** Dominate Virtual Qualifier 1 (simple conditions), optimize for Qualifier 2, and secure championship title.
