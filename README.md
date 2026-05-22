@@ -1,86 +1,165 @@
-# AI Grand Prix — Autonomous Drone Racing Simulator
+# AI Grand Prix — SCUBA Lab
+**Anduril AI Grand Prix** | FAU SCUBA Lab / MPCR Lab | VQ1 launching end of May 2026
 
-Autonomous drone racing simulation for the [AI Grand Prix](https://www.aigrandprix.com/) competition, founded by Anduril in partnership with the Drone Champions League (DCL), Neros Technologies, and JobsOhio.
+---
 
-## Architecture
+## ⚡ Current Status (May 22, 2026)
 
-A vision-based autonomous racing system trained end-to-end with reinforcement learning (PPO), combining RGB FPV and simulated event camera inputs.
+| Item | Status |
+|---|---|
+| VQ1 deadline | **End of next week** |
+| Deployment pipeline | ✅ Clean — 25 tests passing |
+| MAVLink compliance | ✅ Spec-compliant (VADR-TS-002) |
+| Active model | ✅ `aigp_distill_final.zip` — deployable now |
+| Tilt fine-tune | ⏳ Training on FAU HPC (job 4654527) |
+| Vision stream | ⏳ Placeholder — wires in on Day 1 when sim drops |
 
-### Perception Pipeline
-- **FPV Camera**: 48×48 RGB forward-facing camera with configurable tilt and FOV
-- **Event Camera**: Simulated asynchronous brightness-change sensor based on the Event Generation Model (EGM) from [event-sharp-nerf-drones](https://github.com/uzh-rpg/event-sharp-nerf-drones) (Zou, Cannici & Scaramuzza, IEEE T-RO 2026, UZH RPG). Events remain sharp during aggressive flight when RGB frames blur
-- **Frame Stacking**: Temporal context via stacked RGB+event frames (14 input channels)
-- **Motion Blur Simulation**: Sub-exposure averaging with SLERP pose interpolation and staged warmup
-
-### Control
-- **CTBR Action Space**: Collective thrust + body rates — standard for racing drones (Swift, Nature 2023)
-- **Betaflight-Style Rate Controller**: PD body-rate tracking at physics rate
-- **Motor Dynamics**: First-order lag modeling real ESC/motor response
-
-### State Estimation
-- **Visual-Inertial Odometry (VIO)**: Simulated IMU integration with gyro/accelerometer bias, white noise, and drift. Periodic visual corrections at 30Hz
-- **6D Rotation Representation**: Continuous rotation via first two columns of rotation matrix (Zhou et al., CVPR 2019), avoiding gimbal lock and quaternion discontinuities
-- **SE(3)-Aware State Branch**: 19D minimal state vector (6D rotation + VIO velocity/angular rates/position + previous action)
-
-### Neural Network
-- **Coarse-to-Fine CNN**: Inspired by VoxelNeRF decomposition pattern
-  - Coarse stage: 2 conv layers → 64D features (fast gate detection)
-  - Fine stage: 2 conv layers on coarse feature maps → 128D features (precise localization)
-- **State MLP**: 2 FC layers → 64D features from VIO estimates
-- **Combined**: 256D feature vector → PPO policy/value heads
-
-### Training
-- **PPO** via Stable-Baselines3 with curriculum learning
-- **Curriculum**: Medium difficulty (0–30%) → ramp (30–80%) → full (80–100%)
-- **Domain Randomization**: Mass (±10%), thrust noise (±5%), aerodynamic drag, action latency (0–2 steps), observation noise and delay
-- **200M timesteps** target with checkpointing every 50K steps
-
-## Environment
-
-MuJoCo-based physics simulation with:
-- 8-gate race track
-- 200Hz physics / 100Hz control
-- Configurable difficulty scaling (0 = easy, 1 = full Swift-level realism)
-- Reward: gate passage bonuses + progress shaping + crash penalties
-
-## Quick Start
-
+**To run:**
 ```bash
-# Create venv and install dependencies
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+python3 run_vq1.py --host <dcl_ip> --port <dcl_port>
+```
+That's it. One command. The script loads the best available model automatically.
 
-# Train vision policy with event camera
-python3 train_vision.py
+---
 
-# View trained model in MuJoCo 3D viewer
-mjpython race.py --model trained_vision_events/best_model/best_model.zip
+## 🤖 Model Inventory
 
-# View FPV + event camera output
-python3 view_vision.py
+| Model | Location | Type | Tilt | Channels | Status |
+|---|---|---|---|---|---|
+| `aigp_distill_final.zip` | `models_release/` ✅ in repo | Vision PPO | 0° | 14ch RGB+events | **Fallback — deploy now** |
+| `aigp_finetune_tilt_final.zip` | HPC → `models_release/` ⏳ | Vision PPO | +20° (spec) | 6ch RGB | **Primary — pending HPC copy** |
+| `aigp_racer_final.zip` | `models_release/` ✅ in repo | State PPO | — | State only | Teacher model |
+| `aigp_8gates_final.zip` | `models_release/` ✅ in repo | State PPO | — | State only | Reference |
+
+**`run_vq1.py` automatically prefers `aigp_finetune_tilt_final.zip` when present, falls back to `aigp_distill_final.zip`.** No config change needed.
+
+### Getting the fine-tune model into the repo
+Once HPC access is restored:
+```bash
+# On HPC
+cp ~/drone-race-sim/trained_finetune_tilt/aigp_distill_final.zip \
+   ~/drone-race-sim/models_release/aigp_finetune_tilt_final.zip
+
+# Then push to GitHub from local machine
+git add models_release/aigp_finetune_tilt_final.zip
+git commit -m "feat: add tilt-corrected fine-tune model (FPV_TILT=+20, RGB-only)"
+git push origin main
 ```
 
-## Project Structure
+---
+
+## 🚀 VQ1 Day-One Integration Sprint
+
+The DCL simulator ships concurrent with VQ1. When credentials arrive:
+
+**Hour 1 — Connect:**
+```bash
+python3 run_vq1.py --host <dcl_ip> --port <dcl_port>
+```
+Watch logs — confirm heartbeat accepted and telemetry returning.
+
+**Hour 2-3 — Wire vision stream:**
+Replace `_get_vision_frame()` stub in `run_vq1.py` with real DCL camera feed.
+Resize 640×360 → 48×48 already handled in `dcl_adapter.py`.
+
+**Hour 3-4 — First live run:**
+Confirm drone moves toward gate 1. Check `adapter.send_errors` counter in logs if not.
+
+**Day 2 — Submit.**
+
+### Questions to ask DCL on Day 1
+1. Is `SET_ATTITUDE_TARGET` accepted? (we use `type_mask=128`, body rates)
+2. FPV stream port and encoding? (spec says UDP:5600, JPEG — confirm)
+3. Is TIMESYNC handshake required before commands accepted?
+
+---
+
+## 🔧 Spec Compliance (VADR-TS-002)
+
+| Parameter | Spec | Ours | Status |
+|---|---|---|---|
+| Camera tilt | +20° upward | +20° (fine-tune) / 0° (fallback) | ⏳ Fine-tune pending |
+| Camera resolution | 640×360 | 48×48 (adapter resizes) | ✅ |
+| FOV | 90° | 90° | ✅ |
+| Gate inner size | 1500×1500mm | 1500×1500mm | ✅ |
+| Control rate | 50–120 Hz | 50 Hz | ✅ |
+| Coordinate frame | NED | NED | ✅ |
+| Event camera | RGB only | Disabled in fine-tune | ⏳ Fine-tune pending |
+| Physics rate | 120 Hz | 200 Hz training | Validate at sim launch |
+
+---
+
+## 🧠 Architecture
+
+Vision-based autonomous racing trained end-to-end via **privileged distillation** (Swift, Nature 2023):
 
 ```
-├── drone_race_env.py      # Gymnasium environment (physics, sensors, rewards)
-├── config.py              # All hyperparameters and physical constants
-├── track.py               # Gate positions and track layout
-├── train_vision.py        # Vision+event training script (PPO)
-├── train.py               # State-based training (baseline)
-├── race.py                # 3D MuJoCo viewer for trained models
-├── view_vision.py         # FPV + event camera visualization
-├── train_hpc.slurm        # SLURM job script for HPC training
-└── trained_vision_events/ # Checkpoints, eval logs, TensorBoard
+DCL FPV Camera (640×360)
+        ↓ resize to 48×48
+  Coarse-to-Fine CNN → 256D features
+        +
+  VIO State (19D) ──────────────────→ PPO Policy → CTBR [throttle, roll, pitch, yaw]
+                                                         ↓ × MAX_BODY_RATE (12 rad/s)
+                                              SET_ATTITUDE_TARGET (MAVLink v2, UDP)
+                                                         ↓
+                                              DCL Simulator Flight Controller
 ```
 
-## References
+**Training approach:** State-based expert (full privileged state) supervises vision student (pixels + partial state) via DAgger imitation decay. Same lineage as Swift (Nature 2023) and MonoRace (A2RL 2025 winner).
 
-- **Swift** — Champion-level drone racing (Nature 2023). CTBR action space, domain randomization, sim-to-real transfer
-- **event-sharp-nerf-drones** — Event-Aided Sharp Radiance Field Reconstruction for Fast-Flying Drones (Zou et al., IEEE T-RO 2026, UZH RPG). Event camera model, coarse-to-fine architecture, motion blur modeling
-- **MonoRace** — A2RL x DCL 2025 winner. Competition-spec drone parameters
-- **Zhou et al.** — On the Continuity of Rotation Representations in Neural Networks (CVPR 2019). 6D rotation representation
+**Key files:**
+```
+run_vq1.py              ← VQ1 entry point (start here)
+dcl_adapter.py          ← Vision model wrapper + inference
+dcl_mavlink_adapter.py  ← MAVLink v2 encoder (spec-compliant)
+dcl_mavlink_client.py   ← MAVSDK telemetry + control loop
+config.py               ← All hyperparameters
+models_release/         ← Deployable model artifacts
+tests/                  ← 25 compliance tests (run before submitting)
+obsidian/               ← Full project wiki (fragilities, decisions, plan)
+```
 
-## License
+---
 
-MIT
+## 📋 For Dr. Pratik — Quick HPC Check
+
+If Noah is unreachable, check training status with:
+```bash
+ssh nbrande2020@athenelogin.hpc.fau.edu
+squeue -u nbrande2020
+tail -50 ~/drone-race-sim/train_hpc_4654527.log | grep -E "ep_rew|timesteps|imitat|config|rror"
+```
+
+If job is no longer running and `trained_finetune_tilt/aigp_distill_final.zip` exists — training completed successfully. Copy it to `models_release/aigp_finetune_tilt_final.zip` and push.
+
+If job failed — resubmit:
+```bash
+cd ~/drone-race-sim && sbatch train_finetune_tilt.slurm
+```
+
+---
+
+## 📚 References
+
+- **Swift** — Champion-level drone racing (Nature 2023). CTBR action space, privileged distillation, sim-to-real
+- **SkyDreamer** — TU Delft, world-model pixel-to-motor policy, won A2RL Multi-Drone Race 2026 (arXiv 2510.14783)
+- **MonoRace** — TU Delft, A2RL x DCL 2025 winner. Competition-spec drone parameters
+- **VADR-TS-002** — DCL technical specification (in project files)
+- **event-sharp-nerf-drones** — Event camera model (Zou et al., IEEE T-RO 2026, UZH RPG)
+
+## 📖 Full Wiki
+
+All audit findings, decisions, fragilities, training history, and open questions:
+```
+obsidian/
+├── fragilities.md        ← Read this first — known failure modes
+├── submission-readiness.md ← Operational checklist
+├── vq1-execution-plan.md ← Sequenced branch plan
+├── experiments-log.md    ← Training history + active jobs
+├── models.md             ← Model artifact details
+└── open-questions.md     ← Known unknowns
+```
+
+---
+
+*SCUBA Lab, FAU | Machine Perception and Cognitive Robotics Laboratory*
