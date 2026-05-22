@@ -8,7 +8,7 @@
 | Item | Status |
 |---|---|
 | VQ1 deadline | **End of next week** |
-| Deployment pipeline | ✅ Clean — 25 tests passing |
+| Deployment pipeline | ✅ Clean — 28 tests passing |
 | MAVLink compliance | ✅ Spec-compliant (VADR-TS-002) |
 | Active model | ✅ `aigp_distill_final.zip` — deployable now |
 | Tilt fine-tune | ⏳ Training on FAU HPC (job 4654527) |
@@ -19,6 +19,26 @@
 python3 run_vq1.py --host <dcl_ip> --port <dcl_port>
 ```
 That's it. One command. The script loads the best available model automatically.
+
+---
+
+## Local Validation (May 22, 2026 - Surface)
+
+Pipeline confirmed end-to-end on Surface (CPU-only, Python 3.14.3, Windows 11).
+
+| Check | Result |
+|---|---|
+| 28/28 tests passing | Pass |
+| Model loads strict=True | Pass |
+| MAVLink frames generated | Pass |
+| Send errors over 40s | 0 |
+| Throughput on Surface CPU | ~30 Hz |
+| Throughput on competition GPU | Expected 50 Hz+ |
+
+Note: 30 Hz on Surface is CPU-only, no concern. Competition machine has 8GB VRAM GPU per spec (VADR-TS-002 s5.1).
+
+To run stub validation locally:
+DO NOT use --allow-stub-vision for VQ1 submission.
 
 ---
 
