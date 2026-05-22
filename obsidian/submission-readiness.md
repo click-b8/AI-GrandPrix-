@@ -5,7 +5,7 @@
 Operational checklist. If VQ1 submission were required tomorrow, this
 is what would break, in priority order.
 
-**Last updated: 2026-05-14**
+**Last updated: 2026-05-22**
 **VQ1 deadline:** May 2026.
 
 ## Status summary
@@ -13,7 +13,7 @@ is what would break, in priority order.
 All deployment-layer blockers resolved as of 2026-04-22 (branch
 `fix/mavlink-complete`, merged to main). Spec gap analysis completed
 2026-05-14 against VADR-TS-002. Camera tilt fine-tune active on HPC
-(job 4654271). One blocker remains: vision stream (blocked on DCL sim).
+(job 4656258). One blocker remains: vision stream (blocked on DCL sim).
 
 ---
 
@@ -54,7 +54,7 @@ Patched to use `MAVLinkFrameBuilder` from corrected adapter.
 Replaced with logged + counted `send_errors`. No silent swallowing.
 
 ### 9. ~~Test suite is tautological~~ — RESOLVED 2026-04-22
-25/25 tests passing including byte-exact pymavlink comparison,
+28/28 tests passing including byte-exact pymavlink comparison,
 300-frame UDP roundtrip, weight-load validation.
 
 ---
@@ -63,7 +63,7 @@ Replaced with logged + counted `send_errors`. No silent swallowing.
 
 ### Camera tilt mismatch — IN PROGRESS
 Spec §3.8: +20° upward. HPC training had 0°. Root config had -10°.
-**Fix:** Fine-tune job 4654271 running on HPC. `FPV_TILT_DEG=20`,
+**Fix:** Fine-tune job 4656258 running on HPC. `FPV_TILT_DEG=20`,
 `EVENT_CAMERA_ENABLED=False`, 15M steps from `aigp_state_final` teacher.
 Output: `trained_finetune_tilt/aigp_distill_final.zip`.
 `run_vq1.py` will auto-prefer `aigp_finetune_tilt_final.zip` when present.
@@ -98,10 +98,14 @@ Retune `MOTOR_TAU`/`RATE_KP`/`RATE_KD` if divergence > 0.5m at gates.
 
 ## Decision: what to ship for VQ1
 
-**Preferred:** wait for fine-tune job 4654271 to complete, copy
+**Preferred:** wait for fine-tune job 4656258 to complete, copy
 `aigp_finetune_tilt_final.zip` to `models_release/`, push to GitHub.
 `run_vq1.py` picks it up automatically. Integrate vision stream when
 sim ships. Submit.
+
+**Local validation (2026-05-22):** Pipeline confirmed on Surface (Python 3.14.3,
+Windows 11, CPU-only). 28/28 tests passing, 0 send errors, ~30 Hz throughput on CPU
+(50 Hz expected on competition GPU). Model loads strict=True.
 
 **Fallback if fine-tune fails:** submit with `aigp_distill_final.zip`
 (0° tilt, 14ch). Performance will be degraded but submission is

@@ -68,7 +68,7 @@ Cross-referenced training config against VADR-TS-002:
 
 ## Active training run (2026-05-14)
 
-**Job 4654271** on FAU HPC (shortq7-gpu, nodegpu partition):
+**Job 4656258** on FAU HPC (shortq7-gpu, nodegpu partition):
 - Script: `train_finetune_tilt.py` (wrapper over `train_distill.py`)
 - Teacher: `trained_state_expert/aigp_state_final.zip`
 - Warmstart: `trained_vision_events/best_model/` if available, else scratch
