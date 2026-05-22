@@ -123,7 +123,7 @@ obsidian/               ← Full project wiki (fragilities, decisions, plan)
 
 ## 📋 For Dr. Pratik — Quick HPC Check
 
-If Noah is unreachable, check training status with:
+Noah is will be in Nicaragua obtain his sign-in password, check training status with:
 ```bash
 ssh nbrande2020@athenelogin.hpc.fau.edu
 squeue -u nbrande2020
