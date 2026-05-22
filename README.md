@@ -11,7 +11,7 @@
 | Deployment pipeline | ✅ Clean — 28 tests passing |
 | MAVLink compliance | ✅ Spec-compliant (VADR-TS-002) |
 | Active model | ✅ `aigp_distill_final.zip` — deployable now |
-| Tilt fine-tune | ⏳ Training on FAU HPC (job 4654527) |
+| Tilt fine-tune | ⏳ Training on FAU HPC (job 4656258) — longq7-eng, 12h wallclock, checkpointing active |
 | Vision stream | ⏳ Placeholder — wires in on Day 1 when sim drops |
 
 **To run:**
@@ -147,7 +147,7 @@ Noah is will be in Nicaragua obtain his sign-in password, check training status 
 ```bash
 ssh nbrande2020@athenelogin.hpc.fau.edu
 squeue -u nbrande2020
-tail -50 ~/drone-race-sim/train_hpc_4654527.log | grep -E "ep_rew|timesteps|imitat|config|rror"
+tail -50 ~/drone-race-sim/train_hpc_4656258.log | grep -E "ep_rew|timesteps|imitat|config|rror"
 ```
 
 If job is no longer running and `trained_finetune_tilt/aigp_distill_final.zip` exists — training completed successfully. Copy it to `models_release/aigp_finetune_tilt_final.zip` and push.
