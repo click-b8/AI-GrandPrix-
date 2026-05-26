@@ -15,10 +15,7 @@ td.EXPERT_PATHS = [
     './trained_state_expert/aigp_state_final.zip',
     './trained_8gates/best_model/best_model.zip',
 ]
-td.VISION_WARMSTART_PATHS = [
-    './trained_vision_events/best_model/best_model.zip',
-    './trained_distilled/best_model/best_model.zip',
-]
+td.VISION_WARMSTART_PATHS = []
 
 if __name__ == '__main__':
     td.main()
