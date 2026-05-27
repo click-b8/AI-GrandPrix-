@@ -632,15 +632,6 @@ class DroneRaceEnv(gym.Env):
         if dist_to_gate < GATE_TOLERANCE:
             # Progressive reward: later gates worth more (1.0x, 1.1x, ..., 1.7x)
             gate_multiplier = 1.0 + 0.1 * self._current_gate_idx
-            # Alignment bonus: reward flying through gate straight (not from side)
-            gate_yaw = self._gate_yaws[self._current_gate_idx]
-            gate_forward = np.array([np.cos(gate_yaw), np.sin(gate_yaw), 0.0])
-            drone_vel = self._data.qvel[0:3]
-            speed = np.linalg.norm(drone_vel)
-            if speed > 0.5:
-                vel_dir = drone_vel / speed
-                alignment = abs(np.dot(vel_dir[:2], gate_forward[:2]))  # 1.0 = perfect
-                gate_multiplier *= (0.5 + 0.5 * alignment)  # 50-100% reward based on alignment
             reward += REWARD_GATE_PASSED * gate_multiplier
             self._current_gate_idx += 1
             if self._current_gate_idx >= self._num_gates:
@@ -887,7 +878,11 @@ class DroneRaceEnv(gym.Env):
 
     def _render_frame(self):
         if self._viewer is None:
-            self._viewer = mujoco.viewer.launch_passive(self._model, self._data)
+            try:
+                self._viewer = mujoco.viewer.launch_passive(self._model, self._data)
+            except RuntimeError:
+                # Fallback to launch() if launch_passive fails on macOS
+                self._viewer = mujoco.viewer.launch(self._model, self._data)
             if self._fpv_view:
                 # Onboard FPV camera — continuous, no cuts
                 self._viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED

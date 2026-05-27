@@ -81,7 +81,7 @@ OBS_DELAY_STEPS = (0, 2)          # observation pipeline latency (camera + proce
 # --- FPV Camera (vision-based racing) ---
 FPV_RESOLUTION = 48           # 48x48 pixels (smaller = faster rendering + CNN)
 FPV_FOV = 90                  # degrees, typical racing camera FOV
-FPV_TILT_DEG = -10            # degrees, camera tilted UPWARD — matches VADR-TS-002 §3.8
+FPV_TILT_DEG = 20             # VADR-TS-002 §3.8: camera tilted upwards 20°
 FPV_FRAME_STACK = 2           # number of stacked frames (2 = enough temporal info, 3.5x less CNN data)
 VISION_STATE_DIM = 19         # 6D rotation(6) + vio_velocity(3) + vio_angular_rates(3) + prev_action(4) + vio_position(3)
 
@@ -96,7 +96,7 @@ MOTION_BLUR_WARMUP = 50_000   # timesteps before enabling blur (staged training)
 # log-luminance changes exceed a contrast threshold C.
 # At high speed, RGB frames blur but events remain sharp — giving the
 # agent usable perception when the standard camera fails.
-EVENT_CAMERA_ENABLED = False  # DCL provides RGB only; zero-pad gap removed by disabling
+EVENT_CAMERA_ENABLED = False  # DCL provides RGB only
 EVENT_CONTRAST_THRESHOLD_POS = 0.2    # C+ positive contrast threshold (log-luminance)
 EVENT_CONTRAST_THRESHOLD_NEG = 0.2    # C- negative contrast threshold
 EVENT_CONTRAST_NOISE = 0.03           # std of per-event threshold noise (realism)
