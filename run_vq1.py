@@ -40,16 +40,34 @@ import argparse
 import asyncio
 import logging
 import os
+import socket as _socket
 import sys
+import threading
 import time
+from typing import Optional
 
 import numpy as np
+from PIL import Image
+from pymavlink.dialects.v20 import common as mav_common
+
+from dcl_vision_receiver import DCLVisionReceiver
+
+# Image.BILINEAR was removed in Pillow 10; Resampling.BILINEAR is canonical in ≥9.1.
+try:
+    _BILINEAR = Image.Resampling.BILINEAR
+except AttributeError:
+    _BILINEAR = Image.BILINEAR  # type: ignore[attr-defined]
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("run_vq1")
+
+# Module-level receiver instances — populated by run() before the control loop starts.
+_vision_receiver: Optional[DCLVisionReceiver] = None
+_telemetry_receiver: Optional["_MAVLinkTelemetryReceiver"] = None
+_telem_lock = threading.Lock()
 
 # Use the fine-tuned model (FPV_TILT=+20, EVENT_CAMERA=False) if available,
 # otherwise fall back to original distill model.
@@ -86,54 +104,113 @@ _allow_stub_vision: bool = False
 
 def _get_vision_frame() -> np.ndarray:
     """
-    STUB: Returns a black frame until the DCL simulator image API is known.
+    Returns the latest 48x48 RGB frame from the DCL UDP vision stream.
 
-    Guarded by the module-level _allow_stub_vision flag. By default, raises
-    NotImplementedError — running the control loop against zero frames would
-    emit a spec-compliant MAVLink stream of body-rate commands derived from
-    constant-zero inference, which is the exact silent-failure pattern the
-    project has been fighting (see obsidian/fragilities.md §Silent failure
-    chain). Pass --allow-stub-vision on the command line for local dev only.
+    Pulls the most-recently-decoded JPEG frame from the background
+    DCLVisionReceiver thread (port 5600, chunked per VADR-TS-002 s4.6),
+    resizes to 48x48 RGB, and returns as uint8 numpy array.
 
-    When DCL ships the simulator, replace this function body with:
-        frame = <DCL image API call>
-        return frame  # shape (48, 48, 3), dtype uint8, RGB
-
-    The policy was trained on 48x48 RGB + event channels. The adapter
-    handles resizing and zero-pads the event channels automatically.
+    The --allow-stub-vision guard is preserved: when that flag is active
+    (local dev only) a black frame is returned instead. Submission runs
+    must NOT pass --allow-stub-vision — the real receiver path is taken
+    by default.
     """
-    if not _allow_stub_vision:
-        raise NotImplementedError(
-            "Vision stream is a stub (returns zero-filled black frames). "
-            "Running the control loop against this would emit a valid-looking "
-            "MAVLink stream of constant body-rate commands derived from "
-            "garbage inference — the silent-failure pattern the project has "
-            "explicit guardrails against. Replace _get_vision_frame() with "
-            "the real DCL image-API call when the simulator ships, or pass "
-            "--allow-stub-vision on the command line for local dev only."
-        )
-    return np.zeros((48, 48, 3), dtype=np.uint8)
+    if _allow_stub_vision:
+        return np.zeros((48, 48, 3), dtype=np.uint8)
+
+    frame = _vision_receiver.get_latest_frame()  # (H, W, 3) uint8 RGB
+    img = Image.fromarray(frame).resize((48, 48), _BILINEAR)
+    return np.array(img, dtype=np.uint8)
 
 
 # ---------------------------------------------------------------------------
-# Telemetry stub — replace with real MAVLink telemetry parsing
+# Telemetry — live MAVLink parsing from DCL simulator UDP stream
 # ---------------------------------------------------------------------------
 
 _latest_telemetry = {
-    "attitude":  (0.0, 0.0, 0.0),
-    "velocity":  (0.0, 0.0, 0.0),
-    "position":  (0.0, 0.0, 0.0),
+    "attitude":  (0.0, 0.0, 0.0),   # (roll, pitch, yaw) rad  — from ATTITUDE
+    "velocity":  (0.0, 0.0, 0.0),   # body angular rates rad/s — from ATTITUDE/HIGHRES_IMU
+    "position":  (0.0, 0.0, 0.0),   # (x, y, z) m NED         — future expansion
 }
 
 
-async def _get_telemetry() -> dict:
-    """
-    STUB: Returns zeroed telemetry until DCL telemetry parsing is wired up.
+class _MAVLinkTelemetryReceiver:
+    """Background UDP receiver that parses ATTITUDE and HIGHRES_IMU from the DCL simulator.
 
-    Replace with actual MAVLink ATTITUDE / LOCAL_POSITION_NED parsing
-    from the DCL simulator's telemetry stream.
+    Binds a dedicated socket (default port 14550, standard GCS port) so the simulator
+    auto-discovers our address from the first heartbeat and starts sending telemetry.
+    Updates _latest_telemetry under _telem_lock; runs as a daemon thread.
     """
-    return _latest_telemetry
+
+    def __init__(self, bind_host: str = "0.0.0.0", bind_port: int = 14550):
+        self.bind_host = bind_host
+        self.bind_port = bind_port
+        self._sock: Optional[_socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+
+    def start(self) -> None:
+        self._sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        self._sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        self._sock.settimeout(1.0)
+        self._sock.bind((self.bind_host, self.bind_port))
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._receive_loop, daemon=True, name="DCLTelemetry"
+        )
+        self._thread.start()
+        logger.info("[DCL Telemetry] Listening on %s:%d", self.bind_host, self.bind_port)
+
+    def stop(self) -> None:
+        self._running = False
+        if self._sock:
+            self._sock.close()
+        if self._thread:
+            self._thread.join(timeout=3.0)
+        logger.info("[DCL Telemetry] Stopped.")
+
+    def _receive_loop(self) -> None:
+        mav = mav_common.MAVLink(None)
+        mav.robust_parsing = True
+        while self._running:
+            try:
+                data, _ = self._sock.recvfrom(65535)
+            except _socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                msgs = mav.parse_buffer(data)
+                if msgs:
+                    for msg in msgs:
+                        self._handle_msg(msg)
+            except Exception as exc:
+                logger.debug("[DCL Telemetry] Parse error: %s", exc)
+
+    def _handle_msg(self, msg) -> None:
+        msg_type = msg.get_type()
+        if msg_type == "ATTITUDE":
+            # ATTITUDE carries euler angles and body angular rates.
+            with _telem_lock:
+                _latest_telemetry["attitude"] = (
+                    float(msg.roll), float(msg.pitch), float(msg.yaw)
+                )
+                _latest_telemetry["velocity"] = (
+                    float(msg.rollspeed), float(msg.pitchspeed), float(msg.yawspeed)
+                )
+        elif msg_type == "HIGHRES_IMU":
+            # HIGHRES_IMU carries high-rate gyro data; overrides ATTITUDE angular rates
+            # when both are present since IMU runs at a higher update frequency.
+            with _telem_lock:
+                _latest_telemetry["velocity"] = (
+                    float(msg.xgyro), float(msg.ygyro), float(msg.zgyro)
+                )
+
+
+async def _get_telemetry() -> dict:
+    """Return a snapshot of the latest telemetry parsed from the DCL MAVLink stream."""
+    with _telem_lock:
+        return dict(_latest_telemetry)
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +229,28 @@ async def _vision_stream(target_hz: float = 50.0):
 # Main
 # ---------------------------------------------------------------------------
 
-async def run(host: str, port: int, hz: float):
+async def run(
+    host: str,
+    port: int,
+    hz: float,
+    vision_port: int = 5600,
+    telem_port: int = 14550,
+):
+    global _vision_receiver, _telemetry_receiver
+
     from dcl_mavlink_adapter import SCUBALabMAVLinkAdapter
 
     _check_model_path(CANONICAL_MODEL_PATH)
     logger.info("Model path verified: %s", CANONICAL_MODEL_PATH)
+
+    if not _allow_stub_vision:
+        # Start vision receiver in background thread (VADR-TS-002 s4.6 chunked JPEG on UDP).
+        _vision_receiver = DCLVisionReceiver(port=vision_port)
+        _vision_receiver.start()
+
+        # Start MAVLink telemetry receiver in background thread.
+        _telemetry_receiver = _MAVLinkTelemetryReceiver(bind_port=telem_port)
+        _telemetry_receiver.start()
 
     adapter = SCUBALabMAVLinkAdapter(
         model_path=CANONICAL_MODEL_PATH,
@@ -172,7 +266,12 @@ async def run(host: str, port: int, hz: float):
             "DO NOT use for VQ1 submission."
         )
     else:
-        logger.info("Vision stream: real _get_vision_frame() implementation detected.")
+        logger.info(
+            "Vision stream: DCLVisionReceiver on UDP port %d. "
+            "MAVLink telemetry receiver on UDP port %d.",
+            vision_port,
+            telem_port,
+        )
 
     try:
         await adapter.run_loop(
@@ -192,14 +291,22 @@ async def run(host: str, port: int, hz: float):
                 "%d send errors occurred. Check UDP host/port and network connectivity.",
                 adapter.send_errors,
             )
+        if _vision_receiver is not None:
+            _vision_receiver.stop()
+        if _telemetry_receiver is not None:
+            _telemetry_receiver.stop()
         adapter.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SCUBA LAB VQ1 Entry Point")
     parser.add_argument("--host", default="127.0.0.1", help="DCL simulator UDP host")
-    parser.add_argument("--port", type=int, default=14540, help="DCL simulator UDP port")
+    parser.add_argument("--port", type=int, default=14540, help="DCL simulator UDP port (MAVLink control)")
     parser.add_argument("--hz", type=float, default=50.0, help="Control command rate (50-120 Hz)")
+    parser.add_argument("--vision-port", type=int, default=5600,
+                        help="UDP port for DCL FPV vision stream (VADR-TS-002 s4.6, default 5600)")
+    parser.add_argument("--telem-port", type=int, default=14550,
+                        help="Local UDP port to bind for receiving MAVLink telemetry (default 14550)")
     parser.add_argument(
         "--allow-stub-vision",
         action="store_true",
@@ -216,4 +323,4 @@ if __name__ == "__main__":
     # patching — see TestPackageStructure.test_cli_flag_actually_enables_stub.
     globals()['_allow_stub_vision'] = args.allow_stub_vision
 
-    asyncio.run(run(args.host, args.port, args.hz))
+    asyncio.run(run(args.host, args.port, args.hz, args.vision_port, args.telem_port))
