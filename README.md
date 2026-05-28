@@ -1,96 +1,74 @@
 # AI Grand Prix — SCUBA Lab
-**Anduril AI Grand Prix** | FAU SCUBA Lab / MPCR Lab | VQ1 launching end of May 2026
+**Anduril AI Grand Prix** | FAU SCUBA Lab / MPCR Lab | VQ1 — May 2026
 
 ---
 
-## ⚡ Current Status (May 22, 2026)
+## ⚡ Current Status (May 28, 2026)
 
 | Item | Status |
 |---|---|
-| VQ1 deadline | **End of next week** |
-| Deployment pipeline | ✅ Clean — 28 tests passing |
+| Deployment pipeline | ✅ 28/28 tests passing |
 | MAVLink compliance | ✅ Spec-compliant (VADR-TS-002) |
-| Active model | ✅ `aigp_distill_final.zip` — deployable now |
-| Tilt fine-tune | ⏳ Training on FAU HPC (job 4656258) — longq7-eng, 12h wallclock, checkpointing active |
-| Vision stream | ⏳ Placeholder — wires in on Day 1 when sim drops |
+| Deployment model | ✅ `aigp_distill_11600000_steps.zip` — 11.6M steps, reward −162, stable |
+| Vision stream | ✅ DCLVisionReceiver wired — UDP port 5600, threaded, VADR-TS-002 s4.6 |
+| MAVLink telemetry | ✅ `_MAVLinkTelemetryReceiver` wired — ATTITUDE + HIGHRES_IMU parsed |
+| Camera tilt | ✅ +20° (fine-tune complete) |
+| RGB only / event camera | ✅ Event camera disabled |
+| Fine-tune training | ⚠️ 3 HPC runs complete; 3rd diverged at ~14M steps — DGX run pending |
+| DGX training | ⏳ Not yet started — fresh start from 11.6M warmstart, LR ~1e-5 |
 
 **To run:**
 ```bash
 python3 run_vq1.py --host <dcl_ip> --port <dcl_port>
 ```
-That's it. One command. The script loads the best available model automatically.
-
----
-
-## Local Validation (May 22, 2026 - Surface)
-
-Pipeline confirmed end-to-end on Surface (CPU-only, Python 3.14.3, Windows 11).
-
-| Check | Result |
-|---|---|
-| 28/28 tests passing | Pass |
-| Model loads strict=True | Pass |
-| MAVLink frames generated | Pass |
-| Send errors over 40s | 0 |
-| Throughput on Surface CPU | ~30 Hz |
-| Throughput on competition GPU | Expected 50 Hz+ |
-
-Note: 30 Hz on Surface is CPU-only, no concern. Competition machine has 8GB VRAM GPU per spec (VADR-TS-002 s5.1).
-
-To run stub validation locally:
-DO NOT use --allow-stub-vision for VQ1 submission.
+One command. Loads the best available model automatically. No other setup needed.
 
 ---
 
 ## 🤖 Model Inventory
 
-| Model | Location | Type | Tilt | Channels | Status |
-|---|---|---|---|---|---|
-| `aigp_distill_final.zip` | `models_release/` ✅ in repo | Vision PPO | 0° | 14ch RGB+events | **Fallback — deploy now** |
-| `aigp_finetune_tilt_final.zip` | HPC → `models_release/` ⏳ | Vision PPO | +20° (spec) | 6ch RGB | **Primary — pending HPC copy** |
-| `aigp_racer_final.zip` | `models_release/` ✅ in repo | State PPO | — | State only | Teacher model |
-| `aigp_8gates_final.zip` | `models_release/` ✅ in repo | State PPO | — | State only | Reference |
+| Model | Location | Steps | Reward | Status |
+|---|---|---|---|---|
+| `aigp_distill_11600000_steps.zip` | `models_release/` ✅ | 11.6M | −162 | **DEPLOY THIS** — stable pre-collapse checkpoint |
+| `aigp_finetune_tilt_final.zip` | `models_release/` ✅ | ~4–5M | — | Backup only (earlier checkpoint from tilt fine-tune) |
+| `best_model.zip` | repo root | — | — | ❌ DO NOT USE — from a collapsed run |
+| `best_model_tilt.zip` | repo root | ~4–5M | — | Backup only — same as finetune_tilt_final |
+| `aigp_racer_final.zip` | `models_release/` ✅ | — | — | Teacher model (state-based PPO) |
+| `aigp_8gates_final.zip` | `models_release/` ✅ | — | — | Reference model |
 
 **`run_vq1.py` automatically prefers `aigp_finetune_tilt_final.zip` when present, falls back to `aigp_distill_final.zip`.** No config change needed.
 
-### Getting the fine-tune model into the repo
-Once HPC access is restored:
-```bash
-# On HPC
-cp ~/drone-race-sim/trained_finetune_tilt/aigp_distill_final.zip \
-   ~/drone-race-sim/models_release/aigp_finetune_tilt_final.zip
-
-# Then push to GitHub from local machine
-git add models_release/aigp_finetune_tilt_final.zip
-git commit -m "feat: add tilt-corrected fine-tune model (FPV_TILT=+20, RGB-only)"
-git push origin main
-```
+### Fine-tune training history
+Three HPC runs completed (job IDs 4656682, 4656743, 4657222). Third run diverged numerically at ~14M steps — training stopped. Best stable checkpoint is the 11.6M-step pre-collapse snapshot deployed above. DGX run is the next step: fresh start from the 11.6M warmstart, LR ~1e-5.
 
 ---
 
-## 🚀 VQ1 Day-One Integration Sprint
+## 🚀 VQ1 Day 1 Checklist
 
-The DCL simulator ships concurrent with VQ1. When credentials arrive:
-
-**Hour 1 — Connect:**
 ```bash
 python3 run_vq1.py --host <dcl_ip> --port <dcl_port>
 ```
-Watch logs — confirm heartbeat accepted and telemetry returning.
 
-**Hour 2-3 — Wire vision stream:**
-Replace `_get_vision_frame()` stub in `run_vq1.py` with real DCL camera feed.
-Resize 640×360 → 48×48 already handled in `dcl_adapter.py`.
+1. **Confirm heartbeat accepted** — look for `[SCUBA Lab MAVLink]` in logs, no send errors
+2. **Confirm vision frames arriving** — `[DCL Vision] Frames received:` should increment
+3. **Confirm telemetry non-zero** — attitude/velocity should leave 0.0 within a few seconds
+4. **First live run**
 
-**Hour 3-4 — First live run:**
-Confirm drone moves toward gate 1. Check `adapter.send_errors` counter in logs if not.
+**If telemetry port is wrong:** DCL may not send to default 14550 — override with:
+```bash
+python3 run_vq1.py --host <dcl_ip> --port <dcl_port> --telem-port <actual_port>
+```
 
-**Day 2 — Submit.**
+**If vision port is wrong:**
+```bash
+python3 run_vq1.py --host <dcl_ip> --port <dcl_port> --vision-port <actual_port>
+```
 
-### Questions to ask DCL on Day 1
-1. Is `SET_ATTITUDE_TARGET` accepted? (we use `type_mask=128`, body rates)
-2. FPV stream port and encoding? (spec says UDP:5600, JPEG — confirm)
-3. Is TIMESYNC handshake required before commands accepted?
+### Questions to confirm with DCL on Day 1
+1. Is `SET_ATTITUDE_TARGET` accepted with `type_mask=128` (body rates)?
+2. FPV stream port? (we default to UDP 5600 per VADR-TS-002 s4.6)
+3. MAVLink telemetry port? (we default to 14550, standard GCS port)
+4. Is TIMESYNC handshake required before commands accepted?
 
 ---
 
@@ -98,14 +76,15 @@ Confirm drone moves toward gate 1. Check `adapter.send_errors` counter in logs i
 
 | Parameter | Spec | Ours | Status |
 |---|---|---|---|
-| Camera tilt | +20° upward | +20° (fine-tune) / 0° (fallback) | ⏳ Fine-tune pending |
-| Camera resolution | 640×360 | 48×48 (adapter resizes) | ✅ |
+| Camera tilt | +20° upward | +20° | ✅ |
+| Camera resolution | 640×360 | resized to 48×48 in receiver | ✅ |
 | FOV | 90° | 90° | ✅ |
+| Event camera | RGB only | Disabled | ✅ |
 | Gate inner size | 1500×1500mm | 1500×1500mm | ✅ |
 | Control rate | 50–120 Hz | 50 Hz | ✅ |
 | Coordinate frame | NED | NED | ✅ |
-| Event camera | RGB only | Disabled in fine-tune | ⏳ Fine-tune pending |
-| Physics rate | 120 Hz | 200 Hz training | Validate at sim launch |
+| MAVLink message | SET_ATTITUDE_TARGET | type_mask=128 (body rates) | ✅ |
+| Physics rate | 120 Hz (DCL sim) | 200 Hz (training) | ⚠️ Validate on first contact |
 
 ---
 
@@ -114,7 +93,8 @@ Confirm drone moves toward gate 1. Check `adapter.send_errors` counter in logs i
 Vision-based autonomous racing trained end-to-end via **privileged distillation** (Swift, Nature 2023):
 
 ```
-DCL FPV Camera (640×360)
+DCL FPV Camera (640×360, UDP port 5600)
+        ↓ DCLVisionReceiver (background thread, chunked JPEG per VADR-TS-002 s4.6)
         ↓ resize to 48×48
   Coarse-to-Fine CNN → 256D features
         +
@@ -123,6 +103,12 @@ DCL FPV Camera (640×360)
                                               SET_ATTITUDE_TARGET (MAVLink v2, UDP)
                                                          ↓
                                               DCL Simulator Flight Controller
+
+DCL MAVLink telemetry (UDP port 14550)
+        ↓ _MAVLinkTelemetryReceiver (background thread)
+        ↓ ATTITUDE → (roll, pitch, yaw) + angular rates
+        ↓ HIGHRES_IMU → body angular rates (high-frequency override)
+        → _latest_telemetry (thread-safe, feeds VIO State above)
 ```
 
 **Training approach:** State-based expert (full privileged state) supervises vision student (pixels + partial state) via DAgger imitation decay. Same lineage as Swift (Nature 2023) and MonoRace (A2RL 2025 winner).
@@ -130,32 +116,35 @@ DCL FPV Camera (640×360)
 **Key files:**
 ```
 run_vq1.py              ← VQ1 entry point (start here)
+dcl_vision_receiver.py  ← Threaded UDP JPEG frame receiver (VADR-TS-002 s4.6)
 dcl_adapter.py          ← Vision model wrapper + inference
 dcl_mavlink_adapter.py  ← MAVLink v2 encoder (spec-compliant)
 dcl_mavlink_client.py   ← MAVSDK telemetry + control loop
 config.py               ← All hyperparameters
 models_release/         ← Deployable model artifacts
-tests/                  ← 25 compliance tests (run before submitting)
+tests/                  ← 28 compliance tests (run before submitting)
 obsidian/               ← Full project wiki (fragilities, decisions, plan)
+```
+
+**CLI reference:**
+```
+--host          DCL simulator IP (default: 127.0.0.1)
+--port          DCL MAVLink control port (default: 14540)
+--hz            Control rate in Hz (default: 50)
+--vision-port   UDP port for FPV stream (default: 5600)
+--telem-port    Local UDP port to bind for MAVLink telemetry (default: 14550)
+--allow-stub-vision   DEV ONLY — black frames, no receivers started
 ```
 
 ---
 
-## 📋 For Dr. Pratik — Quick HPC Check
+## ⚠️ Known Open Items
 
-Noah will be in Nicaragua but can still SSH into the HPC, check training status with:
-```bash
-ssh nbrande2020@athenelogin.hpc.fau.edu
-squeue -u nbrande2020
-tail -50 ~/drone-race-sim/train_hpc_4656258.log | grep -E "ep_rew|timesteps|imitat|config|rror"
-```
-
-If job is no longer running and `trained_finetune_tilt/aigp_distill_final.zip` exists — training completed successfully. Copy it to `models_release/aigp_finetune_tilt_final.zip` and push.
-
-If job failed — resubmit:
-```bash
-cd ~/drone-race-sim && sbatch train_finetune_tilt.slurm
-```
+| Item | Detail |
+|---|---|
+| Physics rate mismatch | Trained at 200 Hz, DCL sim runs at 120 Hz — validate behavior on first contact |
+| DCL telemetry port | Default 14550; confirm with DCL on Day 1, override via `--telem-port` |
+| DGX training run | Not yet started — fresh from 11.6M warmstart, LR ~1e-5, once DGX access granted |
 
 ---
 
@@ -172,12 +161,12 @@ cd ~/drone-race-sim && sbatch train_finetune_tilt.slurm
 All audit findings, decisions, fragilities, training history, and open questions:
 ```
 obsidian/
-├── fragilities.md        ← Read this first — known failure modes
+├── fragilities.md          ← Read this first — known failure modes
 ├── submission-readiness.md ← Operational checklist
-├── vq1-execution-plan.md ← Sequenced branch plan
-├── experiments-log.md    ← Training history + active jobs
-├── models.md             ← Model artifact details
-└── open-questions.md     ← Known unknowns
+├── vq1-execution-plan.md   ← Sequenced branch plan
+├── experiments-log.md      ← Training history + active jobs
+├── models.md               ← Model artifact details
+└── open-questions.md       ← Known unknowns
 ```
 
 ---
