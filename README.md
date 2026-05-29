@@ -25,6 +25,20 @@ One command. Loads the best available model automatically. No other setup needed
 
 ---
 
+## Live Stack Validation (May 29, 2026)
+
+| Check | Result |
+|---|---|
+| Control loop Hz | ✅ 50.0 Hz (target 50 Hz) |
+| Frames sent (30s) | ✅ 1418 |
+| Send errors | ✅ 0 |
+| UDP packets absorbed | ✅ 1474 (1418 control + 56 heartbeats) |
+| Model load time | ✅ ~1.7s |
+| Shutdown | ✅ Clean — finally block fired, no hang |
+| Test method | In-process threading.Timer, UDP sink on localhost:14540 |
+
+---
+
 ## 🤖 Model Inventory
 
 | Model | Location | Steps | Reward | Status |
