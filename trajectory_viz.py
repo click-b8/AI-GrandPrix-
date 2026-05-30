@@ -103,7 +103,7 @@ def _colored_line_3d(ax, x, y, z, values, cmap=SPEED_CMAP, lw=1.5):
 def _colorbar(fig, ax, lc, norm, label="Speed (m/s)"):
     sm = cm.ScalarMappable(cmap=SPEED_CMAP, norm=norm)
     sm.set_array([])
-    fig.colorbar(sm, ax=ax, label=label, pad=0.02, shrink=0.8)
+    fig.colorbar(sm, ax=ax, label=label, fraction=0.03, pad=0.04, shrink=0.6, aspect=20)
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +135,12 @@ def make_png(data: dict, gates, output_path: str) -> None:
         fontsize=13, y=0.98,
     )
 
-    ax3d   = fig.add_subplot(2, 2, 1, projection="3d")
-    ax_td  = fig.add_subplot(2, 2, 2)
-    ax_alt = fig.add_subplot(2, 2, 3)
-    ax_spd = fig.add_subplot(2, 2, 4)
+    from matplotlib.gridspec import GridSpec
+    gs     = GridSpec(2, 2, figure=fig, height_ratios=[1.8, 1])
+    ax3d   = fig.add_subplot(gs[0, 0], projection="3d")
+    ax_td  = fig.add_subplot(gs[0, 1])
+    ax_alt = fig.add_subplot(gs[1, 0])
+    ax_spd = fig.add_subplot(gs[1, 1])
 
     # --- 3-D perspective ---
     if n > 1:
@@ -153,7 +155,7 @@ def make_png(data: dict, gates, output_path: str) -> None:
             ax3d.text(gyi, gxi, gzi + 0.3, str(i), fontsize=7, color="gold", ha="center")
     ax3d.set_xlabel("East (m)"); ax3d.set_ylabel("North (m)"); ax3d.set_zlabel("Alt (m)")
     ax3d.set_title("3-D Path (speed color)")
-    ax3d.legend(fontsize=7, loc="upper right")
+    ax3d.legend(fontsize=7, loc="upper left")
 
     # --- Top-down 2D ---
     if n > 1:
@@ -194,7 +196,7 @@ def make_png(data: dict, gates, output_path: str) -> None:
             ax_alt.axhline(gz_i, color="gold", lw=0.6, ls="--", alpha=0.6)
             ax_alt.text(t[-1], gz_i, f"G{gi}", fontsize=7, color="gold", va="bottom")
     ax_alt.set_xlabel("Time (s)"); ax_alt.set_ylabel("Altitude (m)")
-    ax_alt.set_title(f"Altitude  (max {alt.max():.1f} m)")
+    ax_alt.set_title(f"Altitude over Time  (max {alt.max():.1f} m)")
     ax_alt.grid(True, alpha=0.3)
 
     # --- Ground speed ---
@@ -207,7 +209,7 @@ def make_png(data: dict, gates, output_path: str) -> None:
     ax_spd.legend(fontsize=8)
     ax_spd.grid(True, alpha=0.3)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.subplots_adjust(left=0.06, right=0.94, top=0.93, bottom=0.10, hspace=0.48, wspace=0.38)
     plt.savefig(output_path, dpi=150, bbox_inches="tight", facecolor="#0d0d1a")
     plt.close(fig)
     print(f"[viz] PNG saved: {output_path}")
