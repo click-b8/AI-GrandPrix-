@@ -26,6 +26,8 @@ import sys
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import numpy as np
+
 
 # ---------------------------------------------------------------------------
 # CSV reader
@@ -132,9 +134,7 @@ function buildTraces(d) {
   traces.push({
     type: 'scatter3d', mode: 'lines+markers',
     x: yArr, y: xArr, z: alt,
-    line:   { color: speed, colorscale: 'Plasma', width: 4,
-              colorbar: { title: 'm/s', x: 0.46, len: 0.6, thickness: 12,
-                          tickfont: {size: 9}, titlefont: {size: 9} } },
+    line:   { color: speed, colorscale: 'Plasma', width: 4 },
     marker: { size: 1.5, color: speed, colorscale: 'Plasma', opacity: 0.9 },
     customdata: tArr.map((t, i) => [t, speed[i] || 0]),
     hovertemplate: 't=%{customdata[0]:.1f}s  spd=%{customdata[1]:.2f}m/s  alt=%{z:.1f}m<extra></extra>',
@@ -348,6 +348,92 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------------------
+# Demo mode — fake flight through the 8 gates
+# ---------------------------------------------------------------------------
+
+def _generate_demo_path(n_points: int = 300) -> np.ndarray:
+    """
+    Return (n_points, 3) NED path through all 8 race gates and back to start.
+    Coordinates: x=North, y=East, z=NED-down (negative = altitude).
+    Uses numpy.interp for smooth per-axis interpolation; no scipy needed.
+    """
+    # Gate positions from track.py RACE_TRACK, converted to NED z (z=-altitude).
+    waypoints = np.array([
+        [  0.0,   0.0, -1.0],   # launch
+        [  8.0,   0.0, -2.5],   # G0
+        [ 14.0,   7.0, -3.5],   # G1
+        [ 10.0,  14.0, -4.5],   # G2
+        [  0.0,  16.0, -3.5],   # G3
+        [-10.0,  14.0, -2.0],   # G4
+        [-14.0,   7.0, -1.5],   # G5
+        [-10.0,   0.0, -2.5],   # G6
+        [  0.0,  -2.0, -2.5],   # G7
+        [  0.0,   0.0, -1.0],   # return to start
+    ], dtype=float)
+
+    u_wp   = np.linspace(0.0, 1.0, len(waypoints))
+    u_fine = np.linspace(0.0, 1.0, n_points)
+    return np.column_stack([
+        np.interp(u_fine, u_wp, waypoints[:, i]) for i in range(3)
+    ])
+
+
+def _run_demo(csv_path: str, hz: float = 10.0, n_points: int = 300) -> None:
+    """
+    Write fake flight rows to csv_path at hz rate, one row at a time,
+    so the live dashboard shows the path growing on each 2-second poll.
+    Stops after one full lap (n_points rows).
+    """
+    import time as _time
+
+    path = _generate_demo_path(n_points)
+    dt   = 1.0 / hz
+
+    # Velocities via central differences (m/s)
+    vx = np.gradient(path[:, 0], dt)
+    vy = np.gradient(path[:, 1], dt)
+    vz = np.gradient(path[:, 2], dt)
+
+    # Simplified attitude from velocity direction
+    speed_h = np.sqrt(vx**2 + vy**2)
+    yaw     = np.arctan2(vy, vx + 1e-9)
+    pitch   = np.arctan2(-vz, speed_h + 1e-9) * 0.3   # gentle nose-up/down
+    roll    = np.zeros(n_points)
+
+    max_spd = float(np.sqrt(vx**2 + vy**2).max())
+    print(f"[demo] {n_points} pts at {hz:.0f} Hz -> {n_points/hz:.0f}s  "
+          f"max speed {max_spd:.1f} m/s")
+    print(f"[demo] Writing to {csv_path!r} — browser polls every 2s")
+
+    # Start fresh: write header only
+    with open(csv_path, "w", newline="") as f:
+        csv.writer(f).writerow(
+            ["time_s", "x", "y", "z", "vx", "vy", "vz", "roll", "pitch", "yaw"]
+        )
+
+    start = _time.monotonic()
+    for i in range(n_points):
+        row = [
+            round(i * dt, 4),
+            round(float(path[i, 0]), 4), round(float(path[i, 1]), 4),
+            round(float(path[i, 2]), 4),
+            round(float(vx[i]),      4), round(float(vy[i]),      4),
+            round(float(vz[i]),      4),
+            round(float(roll[i]),    4), round(float(pitch[i]),   4),
+            round(float(yaw[i]),     4),
+        ]
+        with open(csv_path, "a", newline="") as f:
+            csv.writer(f).writerow(row)
+
+        due  = start + (i + 1) * dt
+        wait = due - _time.monotonic()
+        if wait > 0:
+            _time.sleep(wait)
+
+    print(f"[demo] Lap complete — {n_points} rows written to {csv_path!r}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -364,6 +450,11 @@ def main() -> None:
                         help="HTTP server bind address")
     parser.add_argument("--no-browser", action="store_true",
                         help="Don't auto-open the browser")
+    parser.add_argument("--demo", action="store_true",
+                        help="Generate a fake flight through all 8 gates, writing to "
+                             "--csv at 10 Hz. Stops after one full lap (~30s). "
+                             "Use this to confirm the live dashboard works before "
+                             "the real sim drops.")
     args = parser.parse_args()
 
     gates = _load_gates()
@@ -372,6 +463,13 @@ def main() -> None:
 
     gate_str = f"{len(gates)} gates from track.py" if gates else "no gates"
     url = f"http://{args.host}:{args.port}"
+
+    if args.demo:
+        import threading
+        threading.Thread(
+            target=_run_demo, args=(args.csv,),
+            name="DemoFlight", daemon=True,
+        ).start()
 
     server = HTTPServer((args.host, args.port), _Handler)
     print(f"[live] {url}  ({gate_str})")
