@@ -334,14 +334,14 @@ class TestPackageStructure:
                         f"{fname}:{lineno} has silent except: pass — {line.strip()}"
 
     def test_config_fpv_tilt_is_minus_10(self):
-        """FPV_TILT_DEG must be -10 (trained value) in root config.py."""
+        """FPV_TILT_DEG must be +20 (VADR-TS-002 §3.8, fine-tuned value) in root config.py."""
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "config", os.path.join(ROOT, 'config.py'))
         cfg = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cfg)
-        assert cfg.FPV_TILT_DEG == -10, \
-            f"FPV_TILT_DEG={cfg.FPV_TILT_DEG}, expected -10 (trained value)"
+        assert cfg.FPV_TILT_DEG == 20, \
+            f"FPV_TILT_DEG={cfg.FPV_TILT_DEG}, expected 20 (VADR-TS-002 §3.8, fine-tuned value)"
 
     def test_stub_vision_raises_by_default(self):
         """run_vq1._get_vision_frame() must raise NotImplementedError when

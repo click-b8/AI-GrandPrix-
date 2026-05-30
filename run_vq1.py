@@ -118,6 +118,13 @@ def _get_vision_frame() -> np.ndarray:
     if _allow_stub_vision:
         return np.zeros((48, 48, 3), dtype=np.uint8)
 
+    if _vision_receiver is None:
+        raise NotImplementedError(
+            "Vision stream is a stub: DCLVisionReceiver not started. "
+            "Pass --allow-stub-vision for local dev/testing only. "
+            "See obsidian/fragilities.md §Silent failure chain."
+        )
+
     frame = _vision_receiver.get_latest_frame()  # (H, W, 3) uint8 RGB
     img = Image.fromarray(frame).resize((48, 48), _BILINEAR)
     return np.array(img, dtype=np.uint8)
