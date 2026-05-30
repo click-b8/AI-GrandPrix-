@@ -34,5 +34,6 @@ tb_logs/
 # Temp/debug
 train_events.log
 
-# Trajectory logger output — generated debug files, not for repo
+# Trajectory logger/viz output — generated debug files, not for repo
 trajectory_log.csv
+trajectory_plot.html
