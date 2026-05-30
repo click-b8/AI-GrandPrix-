@@ -51,6 +51,7 @@ from PIL import Image
 from pymavlink.dialects.v20 import common as mav_common
 
 from dcl_vision_receiver import DCLVisionReceiver
+from trajectory_logger import TrajectoryLogger
 
 # Image.BILINEAR was removed in Pillow 10; Resampling.BILINEAR is canonical in ≥9.1.
 try:
@@ -67,6 +68,7 @@ logger = logging.getLogger("run_vq1")
 # Module-level receiver instances — populated by run() before the control loop starts.
 _vision_receiver: Optional[DCLVisionReceiver] = None
 _telemetry_receiver: Optional["_MAVLinkTelemetryReceiver"] = None
+_trajectory_logger: Optional[TrajectoryLogger] = None
 _telem_lock = threading.Lock()
 
 # Use the fine-tuned model (FPV_TILT=+20, EVENT_CAMERA=False) if available,
@@ -135,9 +137,10 @@ def _get_vision_frame() -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 _latest_telemetry = {
-    "attitude":  (0.0, 0.0, 0.0),   # (roll, pitch, yaw) rad  — from ATTITUDE
-    "velocity":  (0.0, 0.0, 0.0),   # body angular rates rad/s — from ATTITUDE/HIGHRES_IMU
-    "position":  (0.0, 0.0, 0.0),   # (x, y, z) m NED         — future expansion
+    "attitude":          (0.0, 0.0, 0.0),   # (roll, pitch, yaw) rad  — from ATTITUDE
+    "velocity":          (0.0, 0.0, 0.0),   # body angular rates rad/s — from ATTITUDE/HIGHRES_IMU
+    "position":          (0.0, 0.0, 0.0),   # (x, y, z) m NED         — from LOCAL_POSITION_NED
+    "linear_velocity":   (0.0, 0.0, 0.0),   # (vx, vy, vz) m/s NED   — from LOCAL_POSITION_NED
 }
 
 
@@ -212,10 +215,24 @@ class _MAVLinkTelemetryReceiver:
                 _latest_telemetry["velocity"] = (
                     float(msg.xgyro), float(msg.ygyro), float(msg.zgyro)
                 )
+        elif msg_type == "LOCAL_POSITION_NED":
+            with _telem_lock:
+                _latest_telemetry["position"] = (
+                    float(msg.x), float(msg.y), float(msg.z)
+                )
+                _latest_telemetry["linear_velocity"] = (
+                    float(msg.vx), float(msg.vy), float(msg.vz)
+                )
 
 
 async def _get_telemetry() -> dict:
     """Return a snapshot of the latest telemetry parsed from the DCL MAVLink stream."""
+    with _telem_lock:
+        return dict(_latest_telemetry)
+
+
+def _get_telemetry_sync() -> dict:
+    """Sync snapshot for polling threads (e.g. TrajectoryLogger)."""
     with _telem_lock:
         return dict(_latest_telemetry)
 
@@ -242,8 +259,9 @@ async def run(
     hz: float,
     vision_port: int = 5600,
     telem_port: int = 14550,
+    log_trajectory: bool = False,
 ):
-    global _vision_receiver, _telemetry_receiver
+    global _vision_receiver, _telemetry_receiver, _trajectory_logger
 
     from dcl_mavlink_adapter import SCUBALabMAVLinkAdapter
 
@@ -265,6 +283,14 @@ async def run(
         udp_port=port,
         target_hz=hz,
     )
+
+    if log_trajectory:
+        _trajectory_logger = TrajectoryLogger(
+            telemetry_source=_get_telemetry_sync,
+            hz=10.0,
+            output_path="trajectory_log.csv",
+        )
+        _trajectory_logger.start()
 
     logger.info("Starting control loop -> %s:%d at %.0f Hz", host, port, hz)
     if _allow_stub_vision:
@@ -302,6 +328,8 @@ async def run(
             _vision_receiver.stop()
         if _telemetry_receiver is not None:
             _telemetry_receiver.stop()
+        if _trajectory_logger is not None:
+            _trajectory_logger.stop()
         adapter.close()
 
 
@@ -320,6 +348,12 @@ if __name__ == "__main__":
         help="Permit running against zero-filled vision frames. Local dev/testing ONLY — "
              "submission must NOT use this flag. See obsidian/fragilities.md.",
     )
+    parser.add_argument(
+        "--log-trajectory",
+        action="store_true",
+        help="Start TrajectoryLogger — samples telemetry at 10 Hz and writes "
+             "trajectory_log.csv on shutdown. Debug tool only.",
+    )
     args = parser.parse_args()
 
     # Assign explicitly via globals() so this line remains a module-level
@@ -330,4 +364,5 @@ if __name__ == "__main__":
     # patching — see TestPackageStructure.test_cli_flag_actually_enables_stub.
     globals()['_allow_stub_vision'] = args.allow_stub_vision
 
-    asyncio.run(run(args.host, args.port, args.hz, args.vision_port, args.telem_port))
+    asyncio.run(run(args.host, args.port, args.hz, args.vision_port, args.telem_port,
+                    args.log_trajectory))

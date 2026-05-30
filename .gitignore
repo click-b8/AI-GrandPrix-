@@ -33,3 +33,6 @@ tb_logs/
 
 # Temp/debug
 train_events.log
+
+# Trajectory logger output — generated debug files, not for repo
+trajectory_log.csv
