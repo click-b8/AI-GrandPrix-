@@ -58,44 +58,53 @@ class SCUBALabAdapter:
             model_path: Path to trained aigp_distill_final.zip (for historical reference)
             weights_path: Path to policy.pth weights file
         """
+        import os
+        import shutil
+        import tempfile
+        import zipfile
+
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"[SCUBA Lab] Device: {self.device}")
+        print(f"[SCUBA Lab] Loading model: {model_path}")
 
-        # Create observation space for feature extractor
+        # Extract policy.pth from zip and load into memory; clean up temp files immediately.
+        if weights_path is None:
+            _tmpdir = tempfile.mkdtemp()
+            try:
+                with zipfile.ZipFile(model_path, 'r') as z:
+                    z.extract('policy.pth', _tmpdir)
+                checkpoint = torch.load(
+                    os.path.join(_tmpdir, 'policy.pth'),
+                    map_location=self.device,
+                    weights_only=False,
+                )
+            finally:
+                shutil.rmtree(_tmpdir, ignore_errors=True)
+        else:
+            checkpoint = torch.load(weights_path, map_location=self.device, weights_only=False)
+
+        # Detect input channel count from the first conv weight before building the model.
+        # Finetune (EVENT_CAMERA_ENABLED=False): 6ch = 2 RGB frames × 3ch.
+        # Distill  (EVENT_CAMERA_ENABLED=True):  14ch = 2 frames × (3 RGB + 4 event) ch.
+        # Building the model with the wrong channel count causes strict=True to fail.
+        first_weight = checkpoint.get('features_extractor.coarse_cnn.0.weight')
+        n_channels = int(first_weight.shape[1]) if first_weight is not None else 14
+        print(f"[SCUBA Lab] Checkpoint input channels: {n_channels} "
+              f"({'finetune/RGB-only' if n_channels == 6 else 'distill/event-cam'})")
+
         obs_space = spaces.Dict({
-            "image": spaces.Box(low=0, high=255, shape=(14, 48, 48), dtype=np.uint8),
+            "image": spaces.Box(low=0, high=255, shape=(n_channels, 48, 48), dtype=np.uint8),
             "state": spaces.Box(low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32),
         })
-
-        # Initialize feature extractor and policy
-        print(f"[SCUBA Lab] Loading model: {model_path}")
+        self.n_channels = n_channels
         self.feature_extractor = DroneVisionExtractor(obs_space).to(self.device)
         self.policy = PolicyNet().to(self.device)
 
-        # Load pre-trained weights
-        if weights_path is None:
-            import zipfile
-            import tempfile
-            import os
-            import shutil
-
-            # Extract policy.pth from zip if not provided separately
-            tmpdir = tempfile.mkdtemp()
-            try:
-                with zipfile.ZipFile(model_path, 'r') as z:
-                    z.extract('policy.pth', tmpdir)
-                weights_path = os.path.join(tmpdir, 'policy.pth')
-                self._load_weights(weights_path)
-            finally:
-                shutil.rmtree(tmpdir, ignore_errors=True)
-        else:
-            self._load_weights(weights_path)
-
-        # Only reached if _load_weights succeeded (strict=True raises on any mismatch).
+        self._load_weights(checkpoint)
         print(f"[SCUBA Lab] [OK] Feature extractor + policy head loaded (strict=True)")
 
-    def _load_weights(self, weights_path: str):
-        """Load weights from the trained policy.pth with strict=True.
+    def _load_weights(self, checkpoint: dict):
+        """Load weights from a pre-loaded checkpoint dict with strict=True.
 
         The checkpoint is SB3 MultiInputPolicy state: feature-extractor trees are
         stored under the 'features_extractor.' prefix; the policy head is under
@@ -112,10 +121,6 @@ class SCUBALabAdapter:
         PyTorch default random init while the adapter printed a success message.
         See obsidian/fragilities.md.
         """
-        checkpoint = torch.load(weights_path, map_location=self.device, weights_only=False)
-
-        # Feature extractor: SB3 stores shared + per-head copies; all three are
-        # identical in our training, so we load from the shared 'features_extractor.*'.
         feature_dict = {
             k.removeprefix('features_extractor.'): v
             for k, v in checkpoint.items()
@@ -124,15 +129,9 @@ class SCUBALabAdapter:
         self.feature_extractor.load_state_dict(feature_dict, strict=True)
         self.feature_extractor.eval()
 
-        # Policy head: combines SB3's mlp_extractor.policy_net (two Linear layers
-        # with Tanh activation between) and action_net (final Linear).
         policy_dict = {}
         for k, v in checkpoint.items():
             if k.startswith('mlp_extractor.policy_net.'):
-                # 'mlp_extractor.policy_net.0.weight' -> 'mlp_extractor.policy_net.0.weight'
-                # Our PolicyNet uses nn.ModuleDict with key 'policy_net', so the
-                # target key matches after stripping no prefix. We keep the same
-                # leading name for symmetry with the checkpoint layout.
                 policy_dict[k] = v
             elif k.startswith('action_net.'):
                 policy_dict[k] = v
@@ -194,38 +193,26 @@ class SCUBALabAdapter:
 
         # Build image input for model.
         #
-        # Original distill model (aigp_distill_final): EVENT_CAMERA_ENABLED=True
-        #   Input shape: (14, 48, 48) — 2 stacked frames × (3 RGB + 4 event channels)
+        # Distill model (aigp_distill_final): EVENT_CAMERA_ENABLED=True
+        #   n_channels=14 — 2 stacked frames × (3 RGB + 4 event channels)
         #   Zero-pad event channels at inference since DCL provides RGB only.
         #
         # Fine-tuned model (aigp_finetune_tilt_final): EVENT_CAMERA_ENABLED=False
-        #   Input shape: (6, 48, 48) — 2 stacked frames × 3 RGB channels only.
-        #   No zero-padding needed.
-        #
-        # We detect which model is loaded by checking the feature extractor's
-        # expected input channels (first conv layer in_channels).
-        try:
-            expected_channels = self.features_extractor.coarse_cnn[0].in_channels
-        except AttributeError:
-            expected_channels = 14  # default to original model
-
+        #   n_channels=6 — 2 stacked frames × 3 RGB channels only.
         rgb_frame = image.astype(np.float32)  # (3, 48, 48)
 
-        if expected_channels == 14:
-            # Original model: pad 4 zero event channels per frame, stack 2 frames
+        if self.n_channels == 14:
             event_channels = np.zeros((4, 48, 48), dtype=np.float32)
             frame_with_events = np.concatenate([rgb_frame, event_channels], axis=0)  # 7ch
-            image_out = np.concatenate([frame_with_events, frame_with_events], axis=0)  # 14ch
-        elif expected_channels == 6:
-            # Fine-tuned model: RGB only, stack 2 frames
-            image_out = np.concatenate([rgb_frame, rgb_frame], axis=0)  # 6ch
+            image_input = np.concatenate([frame_with_events, frame_with_events], axis=0)  # 14ch
+        elif self.n_channels == 6:
+            image_input = np.concatenate([rgb_frame, rgb_frame], axis=0)  # 6ch
         else:
-            # Unknown — stack RGB frames and warn
             import warnings
-            warnings.warn(f"Unexpected CNN in_channels={expected_channels}; defaulting to RGB stack")
-            image_out = np.concatenate([rgb_frame, rgb_frame], axis=0)
+            warnings.warn(f"Unexpected CNN in_channels={self.n_channels}; defaulting to RGB stack")
+            image_input = np.concatenate([rgb_frame, rgb_frame], axis=0)
 
-        image_14ch = image_out.astype(np.uint8)
+        image_input = image_input.astype(np.uint8)
 
         # Build state vector from telemetry (19D state)
         position = np.array(telemetry.get('position', [0, 0, 0]), dtype=np.float32)
@@ -237,7 +224,7 @@ class SCUBALabAdapter:
         state = np.pad(state, (0, max(0, 19 - len(state))), mode='constant')[:19]
 
         # Convert to tensors
-        image_tensor = torch.from_numpy(image_14ch).float().unsqueeze(0).to(self.device)  # (1, 14, 48, 48)
+        image_tensor = torch.from_numpy(image_input).float().unsqueeze(0).to(self.device)  # (1, n_channels, 48, 48)
         state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(self.device)  # (1, 19)
 
         return image_tensor, state_tensor
@@ -247,7 +234,7 @@ class SCUBALabAdapter:
         Get drone command from model
 
         Args:
-            image_tensor: Processed image tensor (1, 14, 48, 48)
+            image_tensor: Processed image tensor (1, n_channels, 48, 48)
             state_tensor: Processed state tensor (1, 19)
 
         Returns:
