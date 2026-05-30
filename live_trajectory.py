@@ -134,8 +134,8 @@ function buildTraces(d) {
   traces.push({
     type: 'scatter3d', mode: 'lines+markers',
     x: yArr, y: xArr, z: alt,
-    line:   { color: speed, colorscale: 'Plasma', width: 4 },
-    marker: { size: 1.5, color: speed, colorscale: 'Plasma', opacity: 0.9 },
+    line:   { color: speed, colorscale: 'Plasma', width: 4, showscale: false },
+    marker: { size: 1.5, color: speed, colorscale: 'Plasma', opacity: 0.9, showscale: false },
     customdata: tArr.map((t, i) => [t, speed[i] || 0]),
     hovertemplate: 't=%{customdata[0]:.1f}s  spd=%{customdata[1]:.2f}m/s  alt=%{z:.1f}m<extra></extra>',
     name: 'path',
