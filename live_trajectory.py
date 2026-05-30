@@ -1,223 +1,394 @@
 """
 VQ1 Live Trajectory Dashboard — debugging tool, not part of submission.
 
-Polls trajectory_log.csv while a flight is in progress and refreshes
-a matplotlib figure every N seconds. Shows the path growing in real time.
+Runs a lightweight HTTP server. Open the printed URL in any browser and
+the Plotly chart auto-polls /data every 2 seconds, so the flight path
+builds in real time as trajectory_log.csv is written during a flight.
 
-Usage (start before or during a flight):
-    python3 live_trajectory.py [--input trajectory_log.csv] [--interval 1.0]
-                                [--save-frames frames/]
+Usage:
+    python3 live_trajectory.py [--csv trajectory_log.csv] [--port 8765] [--no-browser]
 
-    --save-frames DIR   Instead of displaying an interactive window, save a
-                        numbered PNG into DIR on each update. Useful on
-                        headless machines or inside a remote session.
+Then open http://127.0.0.1:8765 in your browser (opened automatically unless
+--no-browser is passed).  Press Ctrl+C to stop the server.
 
-Requires a display unless --save-frames is used.
-Press Ctrl+C to exit.
+Architecture:
+  GET /        → HTML dashboard (plotly from CDN + JS polling)
+  GET /data    → JSON snapshot of trajectory_log.csv  (cache-busted)
+  Browser JS   → setInterval(fetchAndUpdate, 2000) → Plotly.react()
+                  uirevision='static' preserves 3D camera between updates
 """
 
 import argparse
 import csv
+import json
 import os
 import sys
-import time
-
-import numpy as np
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 # ---------------------------------------------------------------------------
-# CSV reader (robust — handles partial writes mid-flight)
+# CSV reader
 # ---------------------------------------------------------------------------
 
-def _read_csv(path: str) -> dict | None:
-    """Return dict of numpy arrays or None if file missing/empty/unreadable."""
+def _read_csv(path: str) -> dict:
+    """Return dict of float lists keyed by CSV column, or {} if unavailable."""
     if not os.path.exists(path):
-        return None
+        return {}
     try:
         with open(path, newline="") as f:
             reader = csv.DictReader(f)
-            rows = [r for r in reader if all(r.values())]
+            rows = [r for r in reader if r.get("time_s", "").strip()]
         if not rows:
-            return None
-        return {k: np.array([float(r[k]) for r in rows]) for k in rows[0]}
-    except (OSError, ValueError):
-        return None
+            return {}
+        return {k: [float(r[k]) for r in rows] for k in rows[0]}
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------------------
-# Gate loader (optional)
+# Gate loader
 # ---------------------------------------------------------------------------
 
 def _load_gates():
+    """Return list-of-lists [[x,y,z], ...] from track.py, or None."""
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from track import get_gate_positions
-        return get_gate_positions()
+        return get_gate_positions().tolist()
     except Exception:
         return None
 
 
 # ---------------------------------------------------------------------------
-# Plot update helper
+# HTML dashboard
+# The GATES_JSON placeholder is replaced at serve time with actual gate data.
+# All JS curly braces use verbatim string, no Python f-string.
 # ---------------------------------------------------------------------------
 
-def _update_axes(axes, data: dict, gates) -> None:
-    """Redraw all axes with the latest data."""
-    t     = data["time_s"]
-    x     = data["x"]
-    y     = data["y"]
-    z     = data["z"]
-    vx    = data["vx"]
-    vy    = data["vy"]
+_DASHBOARD = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VQ1 Live Trajectory</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d0d1a;
+      color: #ddd;
+      font-family: 'Courier New', monospace;
+      padding: 8px 12px;
+      display: flex; flex-direction: column; height: 100vh;
+    }
+    #header { flex: 0 0 auto; margin-bottom: 6px; }
+    #header h1 { font-size: 1em; color: #aaa; }
+    #status {
+      font-size: 0.82em; color: #5f9; margin-top: 2px;
+      letter-spacing: 0.04em;
+    }
+    #chart { flex: 1 1 auto; min-height: 0; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>&#9652; VQ1 Live Trajectory Dashboard</h1>
+    <div id="status">&#8226; Connecting to /data ...</div>
+  </div>
+  <div id="chart"></div>
 
-    alt   = -z
-    speed = np.sqrt(vx**2 + vy**2)
-    n     = len(t)
-    dur   = float(t.max() - t.min()) if n > 1 else 0.0
+<script>
+// Gate positions injected by the server
+const GATES = GATES_JSON;
+const POLL_MS = 2000;
+let initialized = false;
 
-    ax_td, ax_alt, ax_spd = axes
+// ── helpers ──────────────────────────────────────────────────────────────
 
-    for ax in axes:
-        ax.cla()
+function groundSpeed(vx, vy) {
+  return vx.map((v, i) => Math.sqrt(v * v + vy[i] * vy[i]));
+}
 
-    # Top-down
-    ax_td.set_facecolor("#1a1a2e")
-    if n > 1:
-        from matplotlib.collections import LineCollection
-        import matplotlib.colors as mcolors
+function linspace(a, b, n) {
+  if (n <= 1) return [a];
+  return Array.from({length: n}, (_, i) => a + (b - a) * i / (n - 1));
+}
 
-        vmax = float(speed.max()) if speed.max() > 0 else 1.0
-        norm = mcolors.Normalize(0, vmax)
-        pts  = np.array([y, x]).T.reshape(-1, 1, 2)
-        segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
-        lc   = LineCollection(segs, cmap="plasma", norm=norm, linewidth=2)
-        lc.set_array(speed[:-1])
-        ax_td.add_collection(lc)
-        ax_td.autoscale()
+// ── trace builders ───────────────────────────────────────────────────────
 
-    ax_td.plot(y[0],  x[0],  "o", color="lime", ms=8, zorder=5)
-    ax_td.plot(y[-1], x[-1], "s", color="red",  ms=8, zorder=5)
-    if gates is not None:
-        ax_td.scatter(gates[:, 1], gates[:, 0], c="gold", marker="D",
-                      s=80, zorder=6, label="gate")
-    ax_td.set_xlabel("East — Y (m)", color="white")
-    ax_td.set_ylabel("North — X (m)", color="white")
-    ax_td.set_title(f"Top-Down  [{n} pts, {dur:.0f}s]", color="white")
-    ax_td.set_aspect("equal", adjustable="datalim")
-    ax_td.tick_params(colors="white")
-    ax_td.grid(True, alpha=0.2, color="white")
+function buildTraces(d) {
+  const n     = d.time_s ? d.time_s.length : 0;
+  const alt   = (d.z  || []).map(v => -v);
+  const speed = n ? groundSpeed(d.vx || [], d.vy || []) : [];
+  const tArr  = d.time_s || [];
+  const xArr  = d.x || [];   // North
+  const yArr  = d.y || [];   // East
 
-    # Altitude
-    ax_alt.plot(t, alt, color="deepskyblue", lw=1.5)
-    if gates is not None:
-        for i, gz in enumerate(gates[:, 2]):
-            ax_alt.axhline(gz, color="gold", lw=0.5, ls="--", alpha=0.6)
-    ax_alt.set_xlabel("Time (s)"); ax_alt.set_ylabel("Altitude (m)")
-    ax_alt.set_title(f"Altitude  (max {alt.max():.1f} m)")
-    ax_alt.grid(True, alpha=0.3)
+  const tRange = n > 1 ? [tArr[0], tArr[n - 1]] : [0, 1];
+  const traces = [];
 
-    # Speed
-    ax_spd.plot(t, speed, color="tomato", lw=1.5)
-    if speed.mean() > 0:
-        ax_spd.axhline(speed.mean(), color="orange", lw=1, ls="--",
-                       label=f"mean {speed.mean():.1f}")
-        ax_spd.legend(fontsize=8)
-    ax_spd.set_xlabel("Time (s)"); ax_spd.set_ylabel("m/s")
-    ax_spd.set_title(f"Ground Speed  (max {speed.max():.1f} m/s)")
-    ax_spd.grid(True, alpha=0.3)
+  // ── LEFT: 3-D flight path ────────────────────────────────────────
+  traces.push({
+    type: 'scatter3d', mode: 'lines+markers',
+    x: yArr, y: xArr, z: alt,
+    line:   { color: speed, colorscale: 'Plasma', width: 4,
+              colorbar: { title: 'm/s', x: 0.46, len: 0.6, thickness: 12,
+                          tickfont: {size: 9}, titlefont: {size: 9} } },
+    marker: { size: 1.5, color: speed, colorscale: 'Plasma', opacity: 0.9 },
+    customdata: tArr.map((t, i) => [t, speed[i] || 0]),
+    hovertemplate: 't=%{customdata[0]:.1f}s  spd=%{customdata[1]:.2f}m/s  alt=%{z:.1f}m<extra></extra>',
+    name: 'path',
+  });
+
+  if (n > 0) {
+    traces.push({
+      type: 'scatter3d', mode: 'markers',
+      x: [yArr[0]], y: [xArr[0]], z: [alt[0]],
+      marker: { size: 9, color: '#00ff88', symbol: 'circle' },
+      name: 'start',
+    });
+    traces.push({
+      type: 'scatter3d', mode: 'markers',
+      x: [yArr[n-1]], y: [xArr[n-1]], z: [alt[n-1]],
+      marker: { size: 9, color: '#ff4444', symbol: 'square' },
+      name: 'end',
+    });
+  }
+
+  if (GATES) {
+    traces.push({
+      type: 'scatter3d', mode: 'markers+text',
+      x: GATES.map(g => g[1]),
+      y: GATES.map(g => g[0]),
+      z: GATES.map(g => g[2]),
+      text: GATES.map((_, i) => 'G' + i),
+      textposition: 'top center',
+      textfont: { color: 'gold', size: 10 },
+      marker: { size: 9, color: 'gold', symbol: 'diamond' },
+      name: 'gates',
+    });
+  }
+
+  // ── RIGHT-TOP: altitude over time ────────────────────────────────
+  traces.push({
+    type: 'scatter', mode: 'lines',
+    x: tArr, y: alt,
+    line: { color: '#00bfff', width: 2 },
+    name: 'altitude',
+    xaxis: 'x2', yaxis: 'y2',
+    hovertemplate: 't=%{x:.1f}s  alt=%{y:.2f}m<extra></extra>',
+  });
+
+  if (GATES) {
+    GATES.forEach((g, i) => {
+      traces.push({
+        type: 'scatter', mode: 'lines',
+        x: tRange, y: [g[2], g[2]],
+        line: { color: 'gold', width: 0.9, dash: 'dash' },
+        name: 'G' + i + ' alt',
+        showlegend: (i === 0),
+        legendgroup: 'gatealt',
+        xaxis: 'x2', yaxis: 'y2',
+        hovertemplate: 'G' + i + ' alt=' + g[2].toFixed(1) + 'm<extra></extra>',
+      });
+    });
+  }
+
+  // ── RIGHT-BOTTOM: ground speed over time ─────────────────────────
+  traces.push({
+    type: 'scatter', mode: 'lines',
+    x: tArr, y: speed,
+    line: { color: '#ff6b6b', width: 2 },
+    name: 'speed',
+    xaxis: 'x3', yaxis: 'y3',
+    hovertemplate: 't=%{x:.1f}s  spd=%{y:.2f}m/s<extra></extra>',
+  });
+
+  const mean = speed.length ? speed.reduce((a, b) => a + b, 0) / speed.length : 0;
+  traces.push({
+    type: 'scatter', mode: 'lines',
+    x: tRange, y: [mean, mean],
+    line: { color: 'orange', width: 1.2, dash: 'dot' },
+    name: 'mean ' + mean.toFixed(1) + ' m/s',
+    xaxis: 'x3', yaxis: 'y3',
+    hovertemplate: 'mean=' + mean.toFixed(2) + 'm/s<extra></extra>',
+  });
+
+  return traces;
+}
+
+// ── layout ───────────────────────────────────────────────────────────────
+
+function buildLayout() {
+  const axStyle = { gridcolor: '#2a2a3e', zerolinecolor: '#444',
+                    color: '#bbb', tickfont: {size: 9} };
+  return {
+    paper_bgcolor: '#0d0d1a',
+    plot_bgcolor:  '#0d0d1a',
+    font: { color: '#ccc', size: 10 },
+    uirevision: 'keep',   // preserves 3D camera across Plotly.react() calls
+
+    // 3-D scene occupies left half, full height
+    scene: {
+      domain: { x: [0, 0.47], y: [0, 1] },
+      aspectmode: 'data',
+      bgcolor: '#111122',
+      xaxis: Object.assign({title: 'East (m)'},  axStyle),
+      yaxis: Object.assign({title: 'North (m)'}, axStyle),
+      zaxis: Object.assign({title: 'Alt (m)'},   axStyle),
+    },
+
+    // Right-top: altitude
+    xaxis2: Object.assign({ domain: [0.52, 1.0], anchor: 'y2',
+                             title: {text: 'Time (s)', font: {size: 9}} }, axStyle),
+    yaxis2: Object.assign({ domain: [0.52, 1.0], anchor: 'x2',
+                             title: {text: 'Altitude (m)', font: {size: 9}} }, axStyle),
+
+    // Right-bottom: speed
+    xaxis3: Object.assign({ domain: [0.52, 1.0], anchor: 'y3',
+                             title: {text: 'Time (s)', font: {size: 9}} }, axStyle),
+    yaxis3: Object.assign({ domain: [0.0, 0.44], anchor: 'x3',
+                             title: {text: 'Speed (m/s)', font: {size: 9}} }, axStyle),
+
+    legend: {
+      bgcolor: 'rgba(10,10,30,0.7)',
+      bordercolor: '#333', borderwidth: 1,
+      x: 0.48, y: 0.98,
+      font: { size: 9 },
+    },
+    margin: { t: 10, b: 35, l: 50, r: 20 },
+
+    // Panel title annotations
+    annotations: [
+      { text: '3-D Flight Path', xref: 'paper', yref: 'paper',
+        x: 0.23, y: 1.0, showarrow: false, font: {size: 10, color: '#888'} },
+      { text: 'Altitude over Time', xref: 'paper', yref: 'paper',
+        x: 0.76, y: 1.0, showarrow: false, font: {size: 10, color: '#888'} },
+      { text: 'Ground Speed over Time', xref: 'paper', yref: 'paper',
+        x: 0.76, y: 0.46, showarrow: false, font: {size: 10, color: '#888'} },
+    ],
+  };
+}
+
+// ── poll loop ─────────────────────────────────────────────────────────────
+
+function fetchAndUpdate() {
+  fetch('/data?t=' + Date.now())   // cache-bust
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(d => {
+      const n     = d.time_s ? d.time_s.length : 0;
+      const dur   = n > 1 ? (d.time_s[n-1] - d.time_s[0]).toFixed(1) : '0.0';
+      const speed = n ? groundSpeed(d.vx || [], d.vy || []) : [];
+      const maxV  = speed.length ? Math.max(...speed).toFixed(2) : '0.00';
+
+      document.getElementById('status').innerHTML =
+        '&#9679; LIVE &nbsp;|&nbsp; ' + n + ' samples &nbsp;|&nbsp; ' +
+        dur + 's &nbsp;|&nbsp; max speed ' + maxV + ' m/s &nbsp;|&nbsp; ' +
+        new Date().toLocaleTimeString();
+
+      const traces = buildTraces(d);
+      const layout = buildLayout();
+
+      if (!initialized) {
+        Plotly.newPlot('chart', traces, layout, { responsive: true });
+        initialized = true;
+      } else {
+        Plotly.react('chart', traces, layout);
+      }
+    })
+    .catch(err => {
+      document.getElementById('status').textContent =
+        '\\u26a0 ' + err.message + ' \\u2014 retrying in ' + (POLL_MS/1000) + 's';
+    });
+}
+
+fetchAndUpdate();
+setInterval(fetchAndUpdate, POLL_MS);
+</script>
+</body>
+</html>
+"""
 
 
 # ---------------------------------------------------------------------------
-# Main
+# HTTP request handler
+# ---------------------------------------------------------------------------
+
+class _Handler(BaseHTTPRequestHandler):
+    csv_path: str = "trajectory_log.csv"
+    gates_json: str = "null"
+
+    def do_GET(self):
+        if self.path.split("?")[0] in ("/", "/index.html"):
+            body = _DASHBOARD.replace("GATES_JSON", self.gates_json).encode()
+            self._respond(200, "text/html; charset=utf-8", body)
+        elif self.path.startswith("/data"):
+            data = _read_csv(self.csv_path)
+            body = json.dumps(data).encode()
+            self._respond(200, "application/json", body,
+                          extra=[("Cache-Control", "no-store")])
+        else:
+            self.send_error(404)
+
+    def _respond(self, code, ctype, body, extra=()):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in extra:
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        pass  # suppress per-request noise
+
+
+# ---------------------------------------------------------------------------
+# Entry point
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="VQ1 Live Trajectory Dashboard",
+        description="VQ1 Live Trajectory Dashboard — browser-based, polls every 2s",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input",       default="trajectory_log.csv")
-    parser.add_argument("--interval",    type=float, default=1.0,
-                        help="Refresh interval in seconds")
-    parser.add_argument("--save-frames", default=None, metavar="DIR",
-                        help="Save numbered PNGs here instead of showing a window")
+    parser.add_argument("--csv",        default="trajectory_log.csv",
+                        help="Trajectory CSV to watch")
+    parser.add_argument("--port",       type=int, default=8765,
+                        help="HTTP server port")
+    parser.add_argument("--host",       default="127.0.0.1",
+                        help="HTTP server bind address")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="Don't auto-open the browser")
     args = parser.parse_args()
 
-    save_mode = args.save_frames is not None
-    if save_mode:
-        os.makedirs(args.save_frames, exist_ok=True)
-        import matplotlib
-        matplotlib.use("Agg")
+    gates = _load_gates()
+    _Handler.csv_path   = args.csv
+    _Handler.gates_json = json.dumps(gates)
 
-    import matplotlib.pyplot as plt
+    gate_str = f"{len(gates)} gates from track.py" if gates else "no gates"
+    url = f"http://{args.host}:{args.port}"
 
-    if not save_mode:
-        plt.ion()
+    server = HTTPServer((args.host, args.port), _Handler)
+    print(f"[live] {url}  ({gate_str})")
+    print(f"[live] Watching {args.csv!r} — browser polls every 2s")
+    print("[live] Ctrl+C to stop.")
 
-    fig, axes_arr = plt.subplots(1, 3, figsize=(16, 5))
-    fig.patch.set_facecolor("#0d0d1a")
-    for ax in axes_arr:
-        ax.set_facecolor("#1a1a2e")
-        ax.tick_params(colors="white")
-        for sp in ax.spines.values():
-            sp.set_edgecolor("#444")
-
-    gates      = _load_gates()
-    last_mtime = 0.0
-    frame_idx  = 0
-    waiting    = True
-
-    print(f"[live] Watching {args.input!r} — interval {args.interval}s")
-    if save_mode:
-        print(f"[live] Saving frames to {args.save_frames!r}")
-    else:
-        print("[live] Press Ctrl+C to exit.")
+    if not args.no_browser:
+        # Open slightly delayed so the server is ready
+        import threading
+        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
 
     try:
-        while True:
-            mtime = os.path.getmtime(args.input) if os.path.exists(args.input) else 0.0
-
-            if mtime != last_mtime:
-                data = _read_csv(args.input)
-                if data and len(data["time_s"]) > 1:
-                    if waiting:
-                        print("[live] Data arriving — dashboard active.")
-                        waiting = False
-                    try:
-                        _update_axes(axes_arr, data, gates)
-                        n   = len(data["time_s"])
-                        dur = float(data["time_s"].max() - data["time_s"].min())
-                        fig.suptitle(
-                            f"LIVE  |  {n} pts  |  {dur:.0f}s",
-                            color="white", fontsize=12,
-                        )
-                        plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-                        if save_mode:
-                            path = os.path.join(args.save_frames,
-                                                f"frame_{frame_idx:05d}.png")
-                            plt.savefig(path, dpi=100, facecolor="#0d0d1a")
-                            frame_idx += 1
-                            print(f"[live] Frame {frame_idx} saved ({n} pts)")
-                        else:
-                            fig.canvas.draw()
-                            fig.canvas.flush_events()
-                    except Exception as exc:
-                        print(f"[live] Plot error (will retry): {exc}")
-
-                    last_mtime = mtime
-
-            elif waiting:
-                print(f"[live] Waiting for {args.input!r} ...", end="\r", flush=True)
-
-            time.sleep(args.interval)
-
+        server.serve_forever()
     except KeyboardInterrupt:
         print("\n[live] Stopped.")
     finally:
-        if not save_mode:
-            plt.ioff()
-            plt.close(fig)
+        server.server_close()
 
 
 if __name__ == "__main__":
