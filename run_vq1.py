@@ -40,7 +40,6 @@ import argparse
 import asyncio
 import logging
 import os
-import socket as _socket
 import sys
 import threading
 import time
@@ -48,7 +47,7 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
-from pymavlink.dialects.v20 import common as mav_common
+from pymavlink import mavutil
 
 from dcl_vision_receiver import DCLVisionReceiver
 from trajectory_logger import TrajectoryLogger
@@ -65,9 +64,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_vq1")
 
-# Module-level receiver instances — populated by run() before the control loop starts.
+# Module-level instances — populated by run() before the control loop starts.
 _vision_receiver: Optional[DCLVisionReceiver] = None
-_telemetry_receiver: Optional["_MAVLinkTelemetryReceiver"] = None
+_mavlink_rx: Optional["_MAVLinkReceiver"] = None
+_timesync = None  # DCLTimesync instance; imported lazily from dcl_mavlink_adapter
 _trajectory_logger: Optional[TrajectoryLogger] = None
 _telem_lock = threading.Lock()
 
@@ -144,85 +144,73 @@ _latest_telemetry = {
 }
 
 
-class _MAVLinkTelemetryReceiver:
-    """Background UDP receiver that parses ATTITUDE and HIGHRES_IMU from the DCL simulator.
+class _MAVLinkReceiver:
+    """Background receive loop on the sim_conn pymavlink connection.
 
-    Binds a dedicated socket (default port 14550, standard GCS port) so the simulator
-    auto-discovers our address from the first heartbeat and starts sending telemetry.
-    Updates _latest_telemetry under _telem_lock; runs as a daemon thread.
+    Calls sim_conn.recv_match() continuously and routes ATTITUDE, HIGHRES_IMU,
+    and LOCAL_POSITION_NED into _latest_telemetry. Replaces the old raw-socket
+    _MAVLinkTelemetryReceiver now that all traffic flows through the single
+    udpin: connection established at startup.
     """
 
-    def __init__(self, bind_host: str = "0.0.0.0", bind_port: int = 14550):
-        self.bind_host = bind_host
-        self.bind_port = bind_port
-        self._sock: Optional[_socket.socket] = None
+    def __init__(self, sim_conn):
+        self._conn = sim_conn
         self._thread: Optional[threading.Thread] = None
         self._running = False
 
     def start(self) -> None:
-        self._sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-        self._sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-        self._sock.settimeout(1.0)
-        self._sock.bind((self.bind_host, self.bind_port))
         self._running = True
         self._thread = threading.Thread(
-            target=self._receive_loop, daemon=True, name="DCLTelemetry"
+            target=self._loop, daemon=True, name="DCLMAVLinkRX"
         )
         self._thread.start()
-        logger.info("[DCL Telemetry] Listening on %s:%d", self.bind_host, self.bind_port)
+        logger.info("[DCL MAVLink RX] Started")
 
     def stop(self) -> None:
         self._running = False
-        if self._sock:
-            self._sock.close()
         if self._thread:
-            self._thread.join(timeout=3.0)
-        logger.info("[DCL Telemetry] Stopped.")
+            self._thread.join(timeout=2.0)
+        logger.info("[DCL MAVLink RX] Stopped")
 
-    def _receive_loop(self) -> None:
-        mav = mav_common.MAVLink(None)
-        mav.robust_parsing = True
+    def _loop(self) -> None:
         while self._running:
             try:
-                data, _ = self._sock.recvfrom(65535)
-            except _socket.timeout:
-                continue
+                msg = self._conn.recv_match(blocking=False)
+            except ConnectionResetError:
+                logger.warning("[DCL MAVLink RX] ConnectionResetError — stopping receiver")
+                return
             except OSError:
                 break
-            try:
-                msgs = mav.parse_buffer(data)
-                if msgs:
-                    for msg in msgs:
-                        self._handle_msg(msg)
-            except Exception as exc:
-                logger.debug("[DCL Telemetry] Parse error: %s", exc)
 
-    def _handle_msg(self, msg) -> None:
-        msg_type = msg.get_type()
-        if msg_type == "ATTITUDE":
-            # ATTITUDE carries euler angles and body angular rates.
-            with _telem_lock:
-                _latest_telemetry["attitude"] = (
-                    float(msg.roll), float(msg.pitch), float(msg.yaw)
-                )
-                _latest_telemetry["velocity"] = (
-                    float(msg.rollspeed), float(msg.pitchspeed), float(msg.yawspeed)
-                )
-        elif msg_type == "HIGHRES_IMU":
-            # HIGHRES_IMU carries high-rate gyro data; overrides ATTITUDE angular rates
-            # when both are present since IMU runs at a higher update frequency.
-            with _telem_lock:
-                _latest_telemetry["velocity"] = (
-                    float(msg.xgyro), float(msg.ygyro), float(msg.zgyro)
-                )
-        elif msg_type == "LOCAL_POSITION_NED":
-            with _telem_lock:
-                _latest_telemetry["position"] = (
-                    float(msg.x), float(msg.y), float(msg.z)
-                )
-                _latest_telemetry["linear_velocity"] = (
-                    float(msg.vx), float(msg.vy), float(msg.vz)
-                )
+            if msg is None:
+                time.sleep(0.001)
+                continue
+
+            msg_type = msg.get_type()
+            if msg_type == "BAD_DATA":
+                continue
+
+            if msg_type == "ATTITUDE":
+                with _telem_lock:
+                    _latest_telemetry["attitude"] = (
+                        float(msg.roll), float(msg.pitch), float(msg.yaw)
+                    )
+                    _latest_telemetry["velocity"] = (
+                        float(msg.rollspeed), float(msg.pitchspeed), float(msg.yawspeed)
+                    )
+            elif msg_type == "HIGHRES_IMU":
+                with _telem_lock:
+                    _latest_telemetry["velocity"] = (
+                        float(msg.xgyro), float(msg.ygyro), float(msg.zgyro)
+                    )
+            elif msg_type == "LOCAL_POSITION_NED":
+                with _telem_lock:
+                    _latest_telemetry["position"] = (
+                        float(msg.x), float(msg.y), float(msg.z)
+                    )
+                    _latest_telemetry["linear_velocity"] = (
+                        float(msg.vx), float(msg.vy), float(msg.vz)
+                    )
 
 
 async def _get_telemetry() -> dict:
@@ -258,30 +246,57 @@ async def run(
     port: int,
     hz: float,
     vision_port: int = 5600,
-    telem_port: int = 14550,
     log_trajectory: bool = False,
 ):
-    global _vision_receiver, _telemetry_receiver, _trajectory_logger
+    global _vision_receiver, _mavlink_rx, _timesync, _trajectory_logger
 
-    from dcl_mavlink_adapter import SCUBALabMAVLinkAdapter
+    from dcl_mavlink_adapter import SCUBALabMAVLinkAdapter, DCLTimesync
 
     _check_model_path(CANONICAL_MODEL_PATH)
     logger.info("Model path verified: %s", CANONICAL_MODEL_PATH)
 
+    sim_conn = None
     if not _allow_stub_vision:
         # Start vision receiver in background thread (VADR-TS-002 s4.6 chunked JPEG on UDP).
         _vision_receiver = DCLVisionReceiver(port=vision_port)
         _vision_receiver.start()
 
-        # Start MAVLink telemetry receiver in background thread.
-        _telemetry_receiver = _MAVLinkTelemetryReceiver(bind_port=telem_port)
-        _telemetry_receiver.start()
+        # Establish pymavlink connection in listen mode — the sim connects to us.
+        # wait_heartbeat() blocks until the sim's first heartbeat arrives, then
+        # sets sim_conn.target_system / target_component automatically.
+        logger.info("Waiting for heartbeat from DCL simulator on UDP port %d...", port)
+        sim_conn = mavutil.mavlink_connection(f'udpin:0.0.0.0:{port}')
+        sim_conn.wait_heartbeat()
+        logger.info(
+            "Heartbeat received — system: %d, component: %d",
+            sim_conn.target_system, sim_conn.target_component,
+        )
+
+        # ARM the drone (matches controller.arm() from PyAIPilotExample exactly).
+        sim_conn.mav.command_long_send(
+            sim_conn.target_system,
+            sim_conn.target_component,
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            0,   # confirmation
+            1,   # param1 = 1 → arm
+            0, 0, 0, 0, 0, 0,
+        )
+        logger.info("ARM command sent to system %d", sim_conn.target_system)
+
+        # Start TIMESYNC at 10 Hz (matches timesync.py from PyAIPilotExample).
+        _timesync = DCLTimesync(sim_conn)
+        _timesync.start()
+
+        # Start MAVLink receive loop to keep _latest_telemetry current.
+        _mavlink_rx = _MAVLinkReceiver(sim_conn)
+        _mavlink_rx.start()
 
     adapter = SCUBALabMAVLinkAdapter(
         model_path=CANONICAL_MODEL_PATH,
         udp_host=host,
         udp_port=port,
         target_hz=hz,
+        sim_conn=sim_conn,
     )
 
     if log_trajectory:
@@ -292,7 +307,7 @@ async def run(
         )
         _trajectory_logger.start()
 
-    logger.info("Starting control loop -> %s:%d at %.0f Hz", host, port, hz)
+    logger.info("Starting control loop at %.0f Hz", hz)
     if _allow_stub_vision:
         logger.warning(
             "Vision stream: STUB (black frames) — --allow-stub-vision is active. "
@@ -301,9 +316,9 @@ async def run(
     else:
         logger.info(
             "Vision stream: DCLVisionReceiver on UDP port %d. "
-            "MAVLink telemetry receiver on UDP port %d.",
+            "MAVLink connection on UDP port %d.",
             vision_port,
-            telem_port,
+            port,
         )
 
     try:
@@ -324,10 +339,12 @@ async def run(
                 "%d send errors occurred. Check UDP host/port and network connectivity.",
                 adapter.send_errors,
             )
+        if _timesync is not None:
+            _timesync.stop()
+        if _mavlink_rx is not None:
+            _mavlink_rx.stop()
         if _vision_receiver is not None:
             _vision_receiver.stop()
-        if _telemetry_receiver is not None:
-            _telemetry_receiver.stop()
         if _trajectory_logger is not None:
             _trajectory_logger.stop()
         adapter.close()
@@ -335,13 +352,12 @@ async def run(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SCUBA LAB VQ1 Entry Point")
-    parser.add_argument("--host", default="127.0.0.1", help="DCL simulator UDP host")
-    parser.add_argument("--port", type=int, default=14540, help="DCL simulator UDP port (MAVLink control)")
+    parser.add_argument("--host", default="127.0.0.1", help="DCL simulator UDP host (stub mode fallback)")
+    parser.add_argument("--port", type=int, default=14550,
+                        help="Local UDP port to listen on for DCL MAVLink connection (default 14550)")
     parser.add_argument("--hz", type=float, default=50.0, help="Control command rate (50-120 Hz)")
     parser.add_argument("--vision-port", type=int, default=5600,
                         help="UDP port for DCL FPV vision stream (VADR-TS-002 s4.6, default 5600)")
-    parser.add_argument("--telem-port", type=int, default=14550,
-                        help="Local UDP port to bind for receiving MAVLink telemetry (default 14550)")
     parser.add_argument(
         "--allow-stub-vision",
         action="store_true",
@@ -364,5 +380,5 @@ if __name__ == "__main__":
     # patching — see TestPackageStructure.test_cli_flag_actually_enables_stub.
     globals()['_allow_stub_vision'] = args.allow_stub_vision
 
-    asyncio.run(run(args.host, args.port, args.hz, args.vision_port, args.telem_port,
+    asyncio.run(run(args.host, args.port, args.hz, args.vision_port,
                     args.log_trajectory))

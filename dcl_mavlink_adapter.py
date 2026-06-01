@@ -36,6 +36,7 @@ CRC seed bytes confirmed from pymavlink MAVLink_*_message.crc_extra:
 import logging
 import socket
 import struct
+import threading
 import time
 from typing import Dict
 
@@ -132,6 +133,8 @@ class MAVLinkFrameBuilder:
         body_pitch_rate: float,
         body_yaw_rate: float,
         thrust: float,
+        target_system: int = TARGET_SYSTEM_ID,
+        target_component: int = TARGET_COMPONENT_ID,
     ) -> bytes:
         """Encode SET_ATTITUDE_TARGET using CTBR body rates.
 
@@ -139,11 +142,13 @@ class MAVLinkFrameBuilder:
 
         body_*_rate values must already be in rad/s (policy_output * MAX_BODY_RATE).
         thrust must be in [0, 1].
+        target_system / target_component are discovered from the sim's heartbeat;
+        default to 1/1 for tests and stub mode.
         """
         msg = mav_common.MAVLink_set_attitude_target_message(
             time_boot_ms=time_boot_ms,
-            target_system=TARGET_SYSTEM_ID,
-            target_component=TARGET_COMPONENT_ID,
+            target_system=target_system,
+            target_component=target_component,
             type_mask=TYPE_MASK_BODY_RATES_ONLY,
             q=[1.0, 0.0, 0.0, 0.0],  # identity; ignored by FC
             body_roll_rate=body_roll_rate,
@@ -166,6 +171,43 @@ class MAVLinkFrameBuilder:
         return self._build_frame(msg)
 
 
+class DCLTimesync:
+    """Background thread sending TIMESYNC at 10 Hz over a pymavlink connection.
+
+    Matches timesync.py from the PyAIPilotExample (tc1=now_ns, ts1=0).
+    Call start() only after wait_heartbeat() so the connection has a known target.
+    """
+
+    TIMESYNC_HZ = 10
+
+    def __init__(self, sim_conn):
+        self._conn = sim_conn
+        self._thread: threading.Thread | None = None
+        self._running = False
+
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="DCLTimesync"
+        )
+        self._thread.start()
+        logger.info("[DCL Timesync] Started at %d Hz", self.TIMESYNC_HZ)
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+
+    def _loop(self) -> None:
+        while self._running:
+            now_ns = int(time.time_ns())
+            try:
+                self._conn.mav.timesync_send(now_ns, 0)
+            except Exception as exc:
+                logger.debug("[DCL Timesync] Send error: %s", exc)
+            time.sleep(1.0 / self.TIMESYNC_HZ)
+
+
 class SCUBALabMAVLinkAdapter:
     """MAVLink-compliant adapter wrapping the distilled vision policy.
 
@@ -180,21 +222,34 @@ class SCUBALabMAVLinkAdapter:
         self,
         model_path: str,
         udp_host: str = "127.0.0.1",
-        udp_port: int = 14540,
+        udp_port: int = 14550,
         target_hz: float = 50.0,
+        sim_conn=None,
     ):
         """
         Args:
-            model_path: Path to aigp_distill_final.zip. Canonical location:
-                        ./models_release/aigp_distill_final.zip
-            udp_host:   Destination IP for MAVLink UDP frames.
-            udp_port:   Destination port (DCL SITL default: 14540).
-            target_hz:  Control command rate. VADR-TS-001 allows 50-120 Hz.
+            model_path:  Path to aigp_distill_final.zip. Canonical location:
+                         ./models_release/aigp_distill_final.zip
+            udp_host:    Fallback destination IP (stub mode only; real mode uses sim_conn).
+            udp_port:    Fallback destination port (stub mode only).
+            target_hz:   Control command rate. VADR-TS-001 allows 50-120 Hz.
+            sim_conn:    pymavlink MAVLink connection returned by mavutil.mavlink_connection()
+                         after wait_heartbeat(). When provided, all sends go via
+                         sim_conn.write() and target_system/component are discovered
+                         from the heartbeat. Pass None in stub/test mode.
         """
         self.udp_host = udp_host
         self.udp_port = udp_port
         self.target_hz = target_hz
         self.control_interval = 1.0 / target_hz
+
+        self._sim_conn = sim_conn
+        if sim_conn is not None:
+            self.target_system   = sim_conn.target_system
+            self.target_component = sim_conn.target_component
+        else:
+            self.target_system   = TARGET_SYSTEM_ID
+            self.target_component = TARGET_COMPONENT_ID
 
         logger.info("[SCUBA Lab MAVLink] Loading model: %s", model_path)
         self.adapter = SCUBALabAdapter(model_path)
@@ -222,9 +277,14 @@ class SCUBALabMAVLinkAdapter:
         self.latest_telemetry["position"]    = list(position)
 
     def _send(self, frame: bytes) -> bool:
-        """Send frame over UDP. Logs + counts errors; never swallows silently."""
+        """Send frame over UDP. Routes via sim_conn.write() when a real connection
+        exists (address discovered from heartbeat), else falls back to raw sendto
+        for stub/test mode. Logs + counts errors; never swallows silently."""
         try:
-            self._sock.sendto(frame, (self.udp_host, self.udp_port))
+            if self._sim_conn is not None:
+                self._sim_conn.write(frame)
+            else:
+                self._sock.sendto(frame, (self.udp_host, self.udp_port))
             return True
         except OSError as exc:
             self.send_errors += 1
@@ -251,6 +311,8 @@ class SCUBALabMAVLinkAdapter:
             body_pitch_rate=float(command["pitch"]) * MAX_BODY_RATE,
             body_yaw_rate=float(command["yaw"])     * MAX_BODY_RATE,
             thrust=float(command["throttle"]),
+            target_system=self.target_system,
+            target_component=self.target_component,
         )
         self._send(frame)
         self.frame_count += 1
