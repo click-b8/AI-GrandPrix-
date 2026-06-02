@@ -291,6 +291,7 @@ class SCUBALabMAVLinkAdapter:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         self.start_time = time.time()
+        self.system_boot_ms = int(time.time() * 1000)
         self.frame_count = 0
         self.send_errors = 0  # never silenced; check this on submission day
 
@@ -353,7 +354,24 @@ class SCUBALabMAVLinkAdapter:
                 target_system=self.target_system,
                 target_component=self.target_component,
             )
-        else:  # 'attitude' or 'rates' — both CTBR via SET_ATTITUDE_TARGET type_mask=128
+            self._send(frame)
+        elif self._sim_conn is not None:
+            # Real sim mode: delegate encoding+send to pymavlink, matching
+            # update_attitude_flight_control() in PyAIPilotExample controller.py.
+            now_ms = int(time.time() * 1000)
+            self._sim_conn.mav.set_attitude_target_send(
+                now_ms - self.system_boot_ms,
+                self._sim_conn.target_system,
+                self._sim_conn.target_component,
+                128,           # ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
+                [1, 0, 0, 0],  # identity quaternion (ignored)
+                float(command["roll"])      * MAX_BODY_RATE,
+                float(command["pitch"])     * MAX_BODY_RATE,
+                float(command["yaw"])       * MAX_BODY_RATE,
+                float(command["throttle"]),
+            )
+            frame = b""
+        else:  # 'attitude' or 'rates', stub/test mode — use custom frame builder
             frame = self.frame_builder.set_attitude_target(
                 time_boot_ms=self.get_time_boot_ms(),
                 body_roll_rate=float(command["roll"])   * MAX_BODY_RATE,
@@ -363,8 +381,8 @@ class SCUBALabMAVLinkAdapter:
                 target_system=self.target_system,
                 target_component=self.target_component,
             )
+            self._send(frame)
 
-        self._send(frame)
         self.frame_count += 1
         return frame
 
