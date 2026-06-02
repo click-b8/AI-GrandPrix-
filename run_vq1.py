@@ -247,6 +247,7 @@ async def run(
     hz: float,
     vision_port: int = 5600,
     log_trajectory: bool = False,
+    control_mode: str = "attitude",
 ):
     global _vision_receiver, _mavlink_rx, _timesync, _trajectory_logger
 
@@ -297,6 +298,7 @@ async def run(
         udp_port=port,
         target_hz=hz,
         sim_conn=sim_conn,
+        control_mode=control_mode,
     )
 
     if log_trajectory:
@@ -307,7 +309,7 @@ async def run(
         )
         _trajectory_logger.start()
 
-    logger.info("Starting control loop at %.0f Hz", hz)
+    logger.info("Starting control loop at %.0f Hz — mode: %s", hz, control_mode)
     if _allow_stub_vision:
         logger.warning(
             "Vision stream: STUB (black frames) — --allow-stub-vision is active. "
@@ -355,7 +357,12 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1", help="DCL simulator UDP host (stub mode fallback)")
     parser.add_argument("--port", type=int, default=14550,
                         help="Local UDP port to listen on for DCL MAVLink connection (default 14550)")
-    parser.add_argument("--hz", type=float, default=50.0, help="Control command rate (50-120 Hz)")
+    parser.add_argument("--hz", type=float, default=250.0,
+                        help="Control command rate in Hz (default 250, matching PyAIPilotExample CONTROL_HZ)")
+    parser.add_argument("--control-mode", default="attitude",
+                        choices=["attitude", "rates", "actuator"],
+                        help="attitude/rates: SET_ATTITUDE_TARGET type_mask=128 (CTBR); "
+                             "actuator: SET_ACTUATOR_CONTROL_TARGET group 0 at --hz")
     parser.add_argument("--vision-port", type=int, default=5600,
                         help="UDP port for DCL FPV vision stream (VADR-TS-002 s4.6, default 5600)")
     parser.add_argument(
@@ -381,4 +388,4 @@ if __name__ == "__main__":
     globals()['_allow_stub_vision'] = args.allow_stub_vision
 
     asyncio.run(run(args.host, args.port, args.hz, args.vision_port,
-                    args.log_trajectory))
+                    args.log_trajectory, args.control_mode))

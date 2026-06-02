@@ -158,6 +158,31 @@ class MAVLinkFrameBuilder:
         )
         return self._build_frame(msg)
 
+    def set_actuator_control_target(
+        self,
+        controls: list,
+        target_system: int = TARGET_SYSTEM_ID,
+        target_component: int = TARGET_COMPONENT_ID,
+        group_mlx: int = 0,
+    ) -> bytes:
+        """Encode SET_ACTUATOR_CONTROL_TARGET matching PyAIPilotExample's update_motor_control().
+
+        time_usec uses UNIX microseconds (int(time.time() * 1e6)) per the example.
+        controls[8] normed to -1..+1; group 0 layout: [roll, pitch, yaw, throttle, 0, 0, 0, 0].
+
+        Note: the example's set_actuator_control_target_send() call has positional
+        args in the wrong order vs. pymavlink's actual signature. We use keyword args
+        via MAVLink_set_actuator_control_target_message to get the correct field mapping.
+        """
+        msg = mav_common.MAVLink_set_actuator_control_target_message(
+            time_usec=int(time.time() * 1e6),
+            group_mlx=group_mlx,
+            target_system=target_system,
+            target_component=target_component,
+            controls=controls,
+        )
+        return self._build_frame(msg)
+
     def heartbeat(self) -> bytes:
         """Encode HEARTBEAT. MAV_TYPE_QUADROTOR=2 (correct for our platform)."""
         msg = mav_common.MAVLink_heartbeat_message(
@@ -225,19 +250,26 @@ class SCUBALabMAVLinkAdapter:
         udp_port: int = 14550,
         target_hz: float = 50.0,
         sim_conn=None,
+        control_mode: str = "attitude",
     ):
         """
         Args:
-            model_path:  Path to aigp_distill_final.zip. Canonical location:
-                         ./models_release/aigp_distill_final.zip
-            udp_host:    Fallback destination IP (stub mode only; real mode uses sim_conn).
-            udp_port:    Fallback destination port (stub mode only).
-            target_hz:   Control command rate. VADR-TS-001 allows 50-120 Hz.
-            sim_conn:    pymavlink MAVLink connection returned by mavutil.mavlink_connection()
-                         after wait_heartbeat(). When provided, all sends go via
-                         sim_conn.write() and target_system/component are discovered
-                         from the heartbeat. Pass None in stub/test mode.
+            model_path:    Path to aigp_distill_final.zip. Canonical location:
+                           ./models_release/aigp_distill_final.zip
+            udp_host:      Fallback destination IP (stub mode only; real mode uses sim_conn).
+            udp_port:      Fallback destination port (stub mode only).
+            target_hz:     Control command rate. 250 Hz matches PyAIPilotExample CONTROL_HZ.
+            sim_conn:      pymavlink MAVLink connection returned by mavutil.mavlink_connection()
+                           after wait_heartbeat(). When provided, all sends go via
+                           sim_conn.write() and target_system/component are discovered
+                           from the heartbeat. Pass None in stub/test mode.
+            control_mode:  'attitude' or 'rates' — SET_ATTITUDE_TARGET type_mask=128 (CTBR);
+                           'actuator' — SET_ACTUATOR_CONTROL_TARGET group 0 at target_hz,
+                           matching update_motor_control() from PyAIPilotExample.
         """
+        if control_mode not in ("attitude", "rates", "actuator"):
+            raise ValueError(f"control_mode must be 'attitude', 'rates', or 'actuator'; got {control_mode!r}")
+        self.control_mode = control_mode
         self.udp_host = udp_host
         self.udp_port = udp_port
         self.target_hz = target_hz
@@ -295,25 +327,43 @@ class SCUBALabMAVLinkAdapter:
             return False
 
     def step(self, vision_frame: np.ndarray) -> bytes:
-        """Inference: vision + telemetry -> MAVLink SET_ATTITUDE_TARGET (sent + returned).
+        """Inference: vision + telemetry -> MAVLink control frame (sent + returned).
 
-        Semantic mapping (CTBR):
+        attitude / rates: SET_ATTITUDE_TARGET type_mask=128 (CTBR body rates).
           body_roll_rate  = command['roll']  * MAX_BODY_RATE  (rad/s)
           body_pitch_rate = command['pitch'] * MAX_BODY_RATE  (rad/s)
           body_yaw_rate   = command['yaw']   * MAX_BODY_RATE  (rad/s)
           thrust          = command['throttle']               ([0,1])
+
+        actuator: SET_ACTUATOR_CONTROL_TARGET group 0 (RPYT normed to [-1,1]).
+          controls = [roll, pitch, yaw, throttle, 0, 0, 0, 0]
+          No MAX_BODY_RATE scaling — actuator controls are already normed.
         """
         command = self.adapter.step(self.latest_telemetry, vision_frame)
 
-        frame = self.frame_builder.set_attitude_target(
-            time_boot_ms=self.get_time_boot_ms(),
-            body_roll_rate=float(command["roll"])   * MAX_BODY_RATE,
-            body_pitch_rate=float(command["pitch"]) * MAX_BODY_RATE,
-            body_yaw_rate=float(command["yaw"])     * MAX_BODY_RATE,
-            thrust=float(command["throttle"]),
-            target_system=self.target_system,
-            target_component=self.target_component,
-        )
+        if self.control_mode == "actuator":
+            frame = self.frame_builder.set_actuator_control_target(
+                controls=[
+                    float(command["roll"]),
+                    float(command["pitch"]),
+                    float(command["yaw"]),
+                    float(command["throttle"]),
+                    0.0, 0.0, 0.0, 0.0,
+                ],
+                target_system=self.target_system,
+                target_component=self.target_component,
+            )
+        else:  # 'attitude' or 'rates' — both CTBR via SET_ATTITUDE_TARGET type_mask=128
+            frame = self.frame_builder.set_attitude_target(
+                time_boot_ms=self.get_time_boot_ms(),
+                body_roll_rate=float(command["roll"])   * MAX_BODY_RATE,
+                body_pitch_rate=float(command["pitch"]) * MAX_BODY_RATE,
+                body_yaw_rate=float(command["yaw"])     * MAX_BODY_RATE,
+                thrust=float(command["throttle"]),
+                target_system=self.target_system,
+                target_component=self.target_component,
+            )
+
         self._send(frame)
         self.frame_count += 1
         return frame
