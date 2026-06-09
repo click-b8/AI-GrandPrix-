@@ -324,6 +324,11 @@ async def run(
         )
 
     try:
+        if not _allow_stub_vision and _vision_receiver is not None:
+            logger.info("Waiting for race to start (no vision frames yet)...")
+            while _vision_receiver.frames_received == 0:
+                await asyncio.sleep(0.1)
+            logger.info("Vision stream active — starting control loop")
         await adapter.run_loop(
             vision_stream_generator=_vision_stream(hz),
             telemetry_source=_get_telemetry,
