@@ -252,6 +252,7 @@ class SCUBALabMAVLinkAdapter:
         sim_conn=None,
         control_mode: str = "attitude",
         race_started_source=None,
+        device: str = None,
     ):
         """
         Args:
@@ -267,6 +268,7 @@ class SCUBALabMAVLinkAdapter:
             control_mode:  'attitude' or 'rates' — SET_ATTITUDE_TARGET type_mask=128 (CTBR);
                            'actuator' — SET_ACTUATOR_CONTROL_TARGET group 0 at target_hz,
                            matching update_motor_control() from PyAIPilotExample.
+            device:        'cuda', 'mps', or 'cpu'.  None = auto-select in SCUBALabAdapter.
         """
         if control_mode not in ("attitude", "rates", "actuator"):
             raise ValueError(f"control_mode must be 'attitude', 'rates', or 'actuator'; got {control_mode!r}")
@@ -286,7 +288,7 @@ class SCUBALabMAVLinkAdapter:
             self.target_component = TARGET_COMPONENT_ID
 
         logger.info("[SCUBA Lab MAVLink] Loading model: %s", model_path)
-        self.adapter = SCUBALabAdapter(model_path)
+        self.adapter = SCUBALabAdapter(model_path, device=device)
         logger.info("[SCUBA Lab MAVLink] Model loaded.")
 
         self.frame_builder = MAVLinkFrameBuilder()

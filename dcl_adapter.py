@@ -85,20 +85,28 @@ class PolicyNet(nn.Module):
 class SCUBALabAdapter:
     """Adapter for DCL AI Grand Prix competition with direct weight loading"""
 
-    def __init__(self, model_path: str, weights_path: str = None):
+    def __init__(self, model_path: str, weights_path: str = None, device: str = None):
         """
         Initialize SCUBA Lab adapter with trained distilled model
 
         Args:
-            model_path: Path to trained aigp_distill_final.zip (for historical reference)
-            weights_path: Path to policy.pth weights file
+            model_path:   Path to trained aigp_distill_final.zip
+            weights_path: Path to policy.pth weights file (extracted from zip if None)
+            device:       'cuda', 'mps', or 'cpu'.  None = auto-select: CUDA > MPS > CPU.
         """
         import os
         import shutil
         import tempfile
         import zipfile
 
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if device is not None:
+            self.device = device
+        elif torch.cuda.is_available():
+            self.device = 'cuda'
+        elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+            self.device = 'mps'
+        else:
+            self.device = 'cpu'
         print(f"[SCUBA Lab] Device: {self.device}")
         print(f"[SCUBA Lab] Loading model: {model_path}")
 

@@ -282,6 +282,7 @@ async def run(
     vision_port: int = 5600,
     log_trajectory: bool = False,
     control_mode: str = "attitude",
+    device: str = None,
 ):
     global _vision_receiver, _mavlink_rx, _timesync, _trajectory_logger
 
@@ -334,6 +335,7 @@ async def run(
         sim_conn=sim_conn,
         control_mode=control_mode,
         race_started_source=lambda: _race_started,
+        device=device,
     )
 
     if log_trajectory:
@@ -417,6 +419,12 @@ if __name__ == "__main__":
         help="Start TrajectoryLogger — samples telemetry at 10 Hz and writes "
              "trajectory_log.csv on shutdown. Debug tool only.",
     )
+    parser.add_argument(
+        "--device",
+        default=None,
+        choices=["cuda", "mps", "cpu"],
+        help="Inference device (default: auto-select cuda > mps > cpu).",
+    )
     args = parser.parse_args()
 
     # Assign explicitly via globals() so this line remains a module-level
@@ -428,4 +436,4 @@ if __name__ == "__main__":
     globals()['_allow_stub_vision'] = args.allow_stub_vision
 
     asyncio.run(run(args.host, args.port, args.hz, args.vision_port,
-                    args.log_trajectory, args.control_mode))
+                    args.log_trajectory, args.control_mode, args.device))
