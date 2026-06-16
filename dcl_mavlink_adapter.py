@@ -251,6 +251,7 @@ class SCUBALabMAVLinkAdapter:
         target_hz: float = 50.0,
         sim_conn=None,
         control_mode: str = "attitude",
+        race_started_source=None,
     ):
         """
         Args:
@@ -270,6 +271,7 @@ class SCUBALabMAVLinkAdapter:
         if control_mode not in ("attitude", "rates", "actuator"):
             raise ValueError(f"control_mode must be 'attitude', 'rates', or 'actuator'; got {control_mode!r}")
         self.control_mode = control_mode
+        self._race_started_source = race_started_source if race_started_source is not None else (lambda: True)
         self.udp_host = udp_host
         self.udp_port = udp_port
         self.target_hz = target_hz
@@ -294,6 +296,7 @@ class SCUBALabMAVLinkAdapter:
         self.system_boot_ms = int(time.time() * 1000)
         self.frame_count = 0
         self.send_errors = 0  # never silenced; check this on submission day
+        self._last_cmd_log = 0.0
 
         self.latest_telemetry: Dict = {
             "position":    [0.0, 0.0, 0.0],
@@ -359,17 +362,31 @@ class SCUBALabMAVLinkAdapter:
             # Real sim mode: delegate encoding+send to pymavlink, matching
             # update_attitude_flight_control() in PyAIPilotExample controller.py.
             now_ms = int(time.time() * 1000)
+            if self._race_started_source():
+                tx_roll   = float(command["roll"])   * MAX_BODY_RATE
+                tx_pitch  = float(command["pitch"])  * MAX_BODY_RATE
+                tx_yaw    = float(command["yaw"])    * MAX_BODY_RATE
+                tx_thrust = float(command["throttle"])
+            else:
+                tx_roll = tx_pitch = tx_yaw = tx_thrust = 0.0
             self._sim_conn.mav.set_attitude_target_send(
                 now_ms - self.system_boot_ms,
                 self._sim_conn.target_system,
                 self._sim_conn.target_component,
                 128,           # ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
                 [1, 0, 0, 0],  # identity quaternion (ignored)
-                float(command["roll"])      * MAX_BODY_RATE,
-                float(command["pitch"])     * MAX_BODY_RATE,
-                float(command["yaw"])       * MAX_BODY_RATE,
-                float(command["throttle"]),
+                tx_roll, tx_pitch, tx_yaw, tx_thrust,
             )
+            now = time.time()
+            if self.frame_count == 0 or now - self._last_cmd_log >= 1.0:
+                self._last_cmd_log = now
+                logger.info(
+                    "[CMD out] frame=%d  race_started=%s  thrust=%.4f  "
+                    "roll=%.3f rad/s  pitch=%.3f rad/s  yaw=%.3f rad/s",
+                    self.frame_count + 1,
+                    self._race_started_source(),
+                    tx_thrust, tx_roll, tx_pitch, tx_yaw,
+                )
             frame = b""
         else:  # 'attitude' or 'rates', stub/test mode — use custom frame builder
             frame = self.frame_builder.set_attitude_target(

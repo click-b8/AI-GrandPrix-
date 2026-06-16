@@ -6,11 +6,16 @@ This version loads weights directly instead of using PPO.load() to avoid
 version compatibility issues with SB3.
 """
 
+import logging
+import time
+
 import numpy as np
 import torch
 import torch.nn as nn
 from gymnasium import spaces
 from vision_model import DroneVisionExtractor
+
+_log = logging.getLogger(__name__)
 
 
 class PolicyNet(nn.Module):
@@ -102,6 +107,7 @@ class SCUBALabAdapter:
 
         self._load_weights(checkpoint)
         print(f"[SCUBA Lab] [OK] Feature extractor + policy head loaded (strict=True)")
+        self._last_state_log = 0.0
 
     def _load_weights(self, checkpoint: dict):
         """Load weights from a pre-loaded checkpoint dict with strict=True.
@@ -222,6 +228,25 @@ class SCUBALabAdapter:
         # Concatenate and pad to 19D
         state = np.concatenate([position, velocity, orientation])
         state = np.pad(state, (0, max(0, 19 - len(state))), mode='constant')[:19]
+
+        now = time.time()
+        if now - self._last_state_log >= 1.0:
+            self._last_state_log = now
+            _log.info(
+                "[State 19D fed to model]\n"
+                "  d0-2   pos(x,y,z)    = [%+.3f %+.3f %+.3f]  (expect: rot_6d col0)\n"
+                "  d3-5   vel(ang_rate)  = [%+.3f %+.3f %+.3f]  (expect: rot_6d col1)\n"
+                "  d6-8   ori(rpy euler) = [%+.3f %+.3f %+.3f]  (expect: vio_linear_vel)\n"
+                "  d9-11  zeros          = [%+.3f %+.3f %+.3f]  (expect: vio_ang_rates)\n"
+                "  d12-15 zeros          = [%+.3f %+.3f %+.3f %+.3f]  (expect: prev_action)\n"
+                "  d16-18 zeros          = [%+.3f %+.3f %+.3f]  (expect: vio_position)",
+                state[0], state[1], state[2],
+                state[3], state[4], state[5],
+                state[6], state[7], state[8],
+                state[9], state[10], state[11],
+                state[12], state[13], state[14], state[15],
+                state[16], state[17], state[18],
+            )
 
         # Convert to tensors
         image_tensor = torch.from_numpy(image_input).float().unsqueeze(0).to(self.device)  # (1, n_channels, 48, 48)

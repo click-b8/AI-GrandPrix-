@@ -40,6 +40,7 @@ import argparse
 import asyncio
 import logging
 import os
+import struct
 import sys
 import threading
 import time
@@ -142,6 +143,7 @@ _latest_telemetry = {
     "position":          (0.0, 0.0, 0.0),   # (x, y, z) m NED         — from LOCAL_POSITION_NED
     "linear_velocity":   (0.0, 0.0, 0.0),   # (vx, vy, vz) m/s NED   — from LOCAL_POSITION_NED
 }
+_race_started: bool = False  # set True by _MAVLinkReceiver when race_start_boot_time_ms >= 0
 
 
 class _MAVLinkReceiver:
@@ -157,6 +159,8 @@ class _MAVLinkReceiver:
         self._conn = sim_conn
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._last_race_log = 0.0
+        self._last_arm_log = 0.0
 
     def start(self) -> None:
         self._running = True
@@ -190,7 +194,16 @@ class _MAVLinkReceiver:
             if msg_type == "BAD_DATA":
                 continue
 
-            if msg_type == "ATTITUDE":
+            if msg_type == "HEARTBEAT":
+                armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                now = time.time()
+                if now - self._last_arm_log >= 1.0:
+                    self._last_arm_log = now
+                    logger.info(
+                        "[Sim HB] armed=%s  base_mode=0x%02x  system_status=%d",
+                        armed, msg.base_mode, msg.system_status,
+                    )
+            elif msg_type == "ATTITUDE":
                 with _telem_lock:
                     _latest_telemetry["attitude"] = (
                         float(msg.roll), float(msg.pitch), float(msg.yaw)
@@ -211,6 +224,27 @@ class _MAVLinkReceiver:
                     _latest_telemetry["linear_velocity"] = (
                         float(msg.vx), float(msg.vy), float(msg.vz)
                     )
+            elif msg_type == "ENCAPSULATED_DATA":
+                raw = bytes(msg.data)
+                if raw and raw[0] == 1:
+                    try:
+                        _, sim_boot_ms, race_start_ms, race_finish_ns, active_gate, _ = \
+                            struct.unpack_from("<BQqqIq", raw)
+                    except struct.error as exc:
+                        logger.debug("[Race Status] unpack error: %s", exc)
+                    else:
+                        global _race_started
+                        if race_start_ms >= 0 and not _race_started:
+                            _race_started = True
+                            logger.info("[Race] STARTED — model output unblocked")
+                        now = time.time()
+                        if now - self._last_race_log >= 1.0:
+                            self._last_race_log = now
+                            logger.info(
+                                "[Race Status] race_start_boot_time_ms=%d  "
+                                "active_gate=%d  race_finish_ns=%d",
+                                race_start_ms, active_gate, race_finish_ns,
+                            )
 
 
 async def _get_telemetry() -> dict:
@@ -299,6 +333,7 @@ async def run(
         target_hz=hz,
         sim_conn=sim_conn,
         control_mode=control_mode,
+        race_started_source=lambda: _race_started,
     )
 
     if log_trajectory:

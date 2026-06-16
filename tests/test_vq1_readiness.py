@@ -398,19 +398,18 @@ class TestPackageStructure:
              "--port", "19999"],  # unbound UDP port; sendto is best-effort, silently drops
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
             cwd=ROOT,
         )
         try:
-            # Model load + control loop startup + first few vision pulls.
-            # 6s is generous on M4; adjust up if this flakes in CI.
-            stdout, stderr = proc.communicate(timeout=6.0)
+            # 20 s budget: model loads in ~120 ms; generous for slow CI.
+            # PYTHONUNBUFFERED=1 ensures log lines reach the pipe immediately.
+            stdout, stderr = proc.communicate(timeout=20.0)
         except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                stdout, stderr = proc.communicate(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                stdout, stderr = proc.communicate()
+            # Single kill + communicate is the safe pattern on Windows —
+            # double communicate() races the internal reader threads.
+            proc.kill()
+            stdout, stderr = proc.communicate()
 
         combined = (stdout or b'').decode(errors='replace') + \
                    (stderr or b'').decode(errors='replace')
