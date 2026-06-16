@@ -299,18 +299,26 @@ class SCUBALabMAVLinkAdapter:
         self._last_cmd_log = 0.0
 
         self.latest_telemetry: Dict = {
-            "position":    [0.0, 0.0, 0.0],
-            "velocity":    [0.0, 0.0, 0.0],
-            "orientation": [0.0, 0.0, 0.0],
+            "position":         [0.0, 0.0, 0.0],
+            "velocity":         [0.0, 0.0, 0.0],   # body angular rates rad/s
+            "orientation":      [0.0, 0.0, 0.0],   # Euler roll/pitch/yaw rad
+            "linear_velocity":  [0.0, 0.0, 0.0],   # world/NED linear vel m/s
         }
 
     def get_time_boot_ms(self) -> int:
         return int((time.time() - self.start_time) * 1000)
 
-    def process_telemetry(self, attitude: tuple, velocity: tuple, position: tuple):
-        self.latest_telemetry["orientation"] = list(attitude)
-        self.latest_telemetry["velocity"]    = list(velocity)
-        self.latest_telemetry["position"]    = list(position)
+    def process_telemetry(
+        self,
+        attitude: tuple,
+        velocity: tuple,
+        position: tuple,
+        linear_velocity: tuple = (0.0, 0.0, 0.0),
+    ):
+        self.latest_telemetry["orientation"]     = list(attitude)
+        self.latest_telemetry["velocity"]        = list(velocity)
+        self.latest_telemetry["position"]        = list(position)
+        self.latest_telemetry["linear_velocity"] = list(linear_velocity)
 
     def _send(self, frame: bytes) -> bool:
         """Send frame over UDP. Routes via sim_conn.write() when a real connection
@@ -424,9 +432,10 @@ class SCUBALabMAVLinkAdapter:
             telemetry = await telemetry_source()
             if telemetry:
                 self.process_telemetry(
-                    telemetry.get("attitude",  (0.0, 0.0, 0.0)),
-                    telemetry.get("velocity",  (0.0, 0.0, 0.0)),
-                    telemetry.get("position",  (0.0, 0.0, 0.0)),
+                    telemetry.get("attitude",        (0.0, 0.0, 0.0)),
+                    telemetry.get("velocity",        (0.0, 0.0, 0.0)),
+                    telemetry.get("position",        (0.0, 0.0, 0.0)),
+                    telemetry.get("linear_velocity", (0.0, 0.0, 0.0)),
                 )
 
             if now - last_control >= self.control_interval:

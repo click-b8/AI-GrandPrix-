@@ -494,5 +494,215 @@ class TestIntegration:
         mav_adapter.close()
 
 
+# ---------------------------------------------------------------------------
+# State-vector layout — verifies the process_observation() rewrite
+# ---------------------------------------------------------------------------
+
+class TestStateVector:
+    """Regression suite for the 19D state-vector fix.
+
+    Most tests exercise module-level functions and need no model zip.
+    Tests that require the adapter (model load) are skipped when the zip
+    is absent so CI stays green.
+    """
+
+    DISTILL_ZIP = os.path.join(ROOT, 'models_release', 'aigp_distill_final.zip')
+
+    # ------------------------------------------------------------------
+    # Rotation math — no model required
+    # ------------------------------------------------------------------
+
+    def test_level_flight_is_identity_rotation(self):
+        """roll=pitch=yaw=0 -> R=I -> rot_6d=[1,0,0, 0,1,0]."""
+        from dcl_adapter import _euler_to_rotmat, _rotmat_to_6d
+        R = _euler_to_rotmat(0.0, 0.0, 0.0)
+        np.testing.assert_allclose(R, np.eye(3), atol=1e-6)
+        rot_6d = _rotmat_to_6d(R)
+        np.testing.assert_allclose(rot_6d, [1, 0, 0, 0, 1, 0], atol=1e-6)
+
+    def test_pure_yaw_90_rotation(self):
+        """yaw=90° -> body-x points East, body-y points South."""
+        from dcl_adapter import _euler_to_rotmat, _rotmat_to_6d
+        R = _euler_to_rotmat(0.0, 0.0, np.pi / 2)
+        rot_6d = _rotmat_to_6d(R)
+        # col0: body-x in NED = [cos(0)*cos(90), cos(0)*sin(90), -sin(0)] = [0, 1, 0]
+        # col1: = [0 - 1, 0 + 0, 0] = [-1, 0, 0]
+        np.testing.assert_allclose(rot_6d, [0, 1, 0, -1, 0, 0], atol=1e-6)
+
+    def test_pure_pitch_30_rotation(self):
+        """pitch=30° -> nose pitched up -> verify col0 and col1."""
+        from dcl_adapter import _euler_to_rotmat, _rotmat_to_6d
+        R = _euler_to_rotmat(0.0, np.pi / 6, 0.0)
+        rot_6d = _rotmat_to_6d(R)
+        # col0 = [cos(30)*cos(0), cos(30)*sin(0), -sin(30)] = [√3/2, 0, -0.5]
+        # col1 = [0, 1, 0]  (no roll or yaw)
+        np.testing.assert_allclose(
+            rot_6d, [np.sqrt(3) / 2, 0.0, -0.5, 0.0, 1.0, 0.0], atol=1e-6
+        )
+
+    def test_rotmat_to_6d_extracts_first_two_columns(self):
+        """_rotmat_to_6d must return R[:,0] then R[:,1], not rows."""
+        from dcl_adapter import _rotmat_to_6d
+        R = np.array([[1, 4, 7], [2, 5, 8], [3, 6, 9]], dtype=np.float32)
+        rot_6d = _rotmat_to_6d(R)
+        np.testing.assert_array_equal(rot_6d, [1, 2, 3, 4, 5, 6])
+
+    def test_matches_training_env_rotmat(self):
+        """_euler_to_rotmat must agree with _quat_to_rotmat from drone_race_env
+        for a random attitude (cross-checks the two implementations)."""
+        sys.path.insert(0, ROOT)
+        from drone_race_env import _quat_to_rotmat
+        from dcl_adapter import _euler_to_rotmat
+
+        roll, pitch, yaw = 0.3, -0.2, 1.1
+        # Build quaternion from ZYX Euler (half-angle formula)
+        cr, sr = np.cos(roll / 2), np.sin(roll / 2)
+        cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
+        cy, sy = np.cos(yaw / 2), np.sin(yaw / 2)
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+
+        R_quat  = _quat_to_rotmat(w, x, y, z)
+        R_euler = _euler_to_rotmat(roll, pitch, yaw)
+        np.testing.assert_allclose(R_euler, R_quat, atol=1e-5,
+                                   err_msg="Euler and quaternion rotation matrices diverge")
+
+    def test_nonzero_attitude_gives_nonzero_rot6d(self):
+        """Regression: with a real yaw, d1 (col0[1]) must be non-zero.
+        The old bug sent NED position into these dims, which happened to be
+        near-zero at the start of a run — the model got near-zero regardless."""
+        from dcl_adapter import _euler_to_rotmat, _rotmat_to_6d
+        # Realistic in-race attitude: slight roll and pitch, 30° yaw
+        R = _euler_to_rotmat(np.radians(8), np.radians(5), np.radians(30))
+        rot_6d = _rotmat_to_6d(R)
+        # With yaw=30° and pitch=5°, col0[1] = cos(5°)*sin(30°) ≈ 0.497
+        assert abs(rot_6d[1]) > 0.4, (
+            f"d1 should be ~0.497 for 30° yaw, got {rot_6d[1]:.4f} — "
+            "rotation may not be constructed correctly"
+        )
+        # col1[0] = cos(8°)*sin(5°)*cos(30°) - sin(8°)*sin(30°) ≈ non-zero
+        assert abs(rot_6d[3]) > 0.05, (
+            f"d3 should be non-zero for non-zero roll+yaw, got {rot_6d[3]:.4f}"
+        )
+
+    # ------------------------------------------------------------------
+    # Wiring — no model required
+    # ------------------------------------------------------------------
+
+    def test_linear_velocity_wired_through_process_telemetry(self):
+        """linear_velocity must survive process_telemetry() into latest_telemetry."""
+        from dcl_mavlink_adapter import SCUBALabMAVLinkAdapter
+
+        class _Stub:
+            pass
+
+        # Build a minimal adapter without loading a model (skip if model absent)
+        if not os.path.exists(self.DISTILL_ZIP):
+            pytest.skip("model zip absent — skip adapter instantiation test")
+
+        adapter = SCUBALabMAVLinkAdapter(
+            model_path=self.DISTILL_ZIP,
+            udp_host="127.0.0.1",
+            udp_port=19998,
+        )
+        adapter.process_telemetry(
+            attitude=(0.1, 0.2, 0.3),
+            velocity=(0.4, 0.5, 0.6),
+            position=(1.0, 2.0, 3.0),
+            linear_velocity=(7.0, 8.0, 9.0),
+        )
+        lv = adapter.latest_telemetry["linear_velocity"]
+        assert lv == [7.0, 8.0, 9.0], (
+            f"linear_velocity not stored: got {lv}"
+        )
+        adapter.close()
+
+    # ------------------------------------------------------------------
+    # Full pipeline — require model
+    # ------------------------------------------------------------------
+
+    def test_state_dim_is_exactly_19(self):
+        """process_observation() must produce a (1, 19) state tensor."""
+        if not os.path.exists(self.DISTILL_ZIP):
+            pytest.skip("model zip absent")
+        import torch
+        from dcl_adapter import SCUBALabAdapter
+        adapter = SCUBALabAdapter(self.DISTILL_ZIP)
+        telemetry = {
+            'orientation':     [0.1, 0.2, 0.3],
+            'velocity':        [0.4, 0.5, 0.6],
+            'position':        [1.0, 2.0, 3.0],
+            'linear_velocity': [4.0, 5.0, 6.0],
+        }
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        _, state_tensor = adapter.process_observation(telemetry, frame)
+        assert state_tensor.shape == (1, 19), (
+            f"state tensor shape {state_tensor.shape} != (1, 19)"
+        )
+
+    def test_state_dims_match_expected_values(self):
+        """Hand-compute expected rot_6d and check d0-5 match; verify d6-8, d9-11, d16-18."""
+        if not os.path.exists(self.DISTILL_ZIP):
+            pytest.skip("model zip absent")
+        import torch
+        from dcl_adapter import SCUBALabAdapter, _euler_to_rotmat, _rotmat_to_6d
+        adapter = SCUBALabAdapter(self.DISTILL_ZIP)
+
+        roll, pitch, yaw = 0.2, -0.15, 0.8
+        telemetry = {
+            'orientation':     [roll, pitch, yaw],
+            'velocity':        [0.1, 0.2, 0.3],        # ang_rates -> d9-11
+            'position':        [10.0, 20.0, 30.0],     # -> d16-18
+            'linear_velocity': [1.5, 2.5, 3.5],        # -> d6-8
+        }
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        _, state_tensor = adapter.process_observation(telemetry, frame)
+        state = state_tensor.squeeze(0).cpu().numpy()
+
+        expected_rot6d = _rotmat_to_6d(_euler_to_rotmat(roll, pitch, yaw))
+        np.testing.assert_allclose(state[0:6],  expected_rot6d,       atol=1e-5,
+                                   err_msg="d0-5 (rot_6d) mismatch")
+        np.testing.assert_allclose(state[6:9],  [1.5, 2.5, 3.5],      atol=1e-5,
+                                   err_msg="d6-8 (linear_velocity) mismatch")
+        np.testing.assert_allclose(state[9:12], [0.1, 0.2, 0.3],      atol=1e-5,
+                                   err_msg="d9-11 (ang_rates) mismatch")
+        np.testing.assert_allclose(state[12:16], [0, 0, 0, 0],        atol=1e-5,
+                                   err_msg="d12-15 (prev_action) should be zero on first call")
+        np.testing.assert_allclose(state[16:19], [10.0, 20.0, 30.0],  atol=1e-5,
+                                   err_msg="d16-18 (position) mismatch")
+
+    def test_prev_action_updates_after_step(self):
+        """After one step(), _prev_action must equal the returned command values."""
+        if not os.path.exists(self.DISTILL_ZIP):
+            pytest.skip("model zip absent")
+        from dcl_adapter import SCUBALabAdapter
+        adapter = SCUBALabAdapter(self.DISTILL_ZIP)
+
+        np.testing.assert_array_equal(adapter._prev_action, [0, 0, 0, 0],
+                                      err_msg="_prev_action must start at zeros")
+
+        telemetry = {
+            'orientation':     [0.0, 0.0, 0.0],
+            'velocity':        [0.0, 0.0, 0.0],
+            'position':        [0.0, 0.0, 0.0],
+            'linear_velocity': [0.0, 0.0, 0.0],
+        }
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        cmd = adapter.step(telemetry, frame)
+        expected = np.array(
+            [cmd['throttle'], cmd['roll'], cmd['pitch'], cmd['yaw']], dtype=np.float32
+        )
+        np.testing.assert_allclose(adapter._prev_action, expected, atol=1e-6,
+                                   err_msg="_prev_action not updated after step()")
+
+        # Second call: d12-15 in next observation must carry the first action
+        _, state_tensor = adapter.process_observation(telemetry, frame)
+        state = state_tensor.squeeze(0).cpu().numpy()
+        np.testing.assert_allclose(state[12:16], expected, atol=1e-5,
+                                   err_msg="d12-15 should reflect previous action on second call")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

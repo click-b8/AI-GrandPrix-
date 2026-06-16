@@ -18,6 +18,36 @@ from vision_model import DroneVisionExtractor
 _log = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Rotation helpers — copied from drone_race_env._rotmat_to_6d / _quat_to_rotmat.
+# Must stay in sync with the training env.
+# ---------------------------------------------------------------------------
+
+def _euler_to_rotmat(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """ZYX Euler angles (rad) -> 3x3 body-to-world rotation matrix.
+
+    R = Rz(yaw) @ Ry(pitch) @ Rx(roll).
+    Matches _quat_to_rotmat() in the training env (verified against it for
+    pure roll, pitch, yaw cases).  See obsidian/state-vector-fix.md.
+    """
+    cr, sr = np.cos(roll),  np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw),   np.sin(yaw)
+    return np.array([
+        [cy*cp,  cy*sp*sr - sy*cr,  cy*sp*cr + sy*sr],
+        [sy*cp,  sy*sp*sr + cy*cr,  sy*sp*cr - cy*sr],
+        [-sp,    cp*sr,              cp*cr            ],
+    ], dtype=np.float32)
+
+
+def _rotmat_to_6d(R: np.ndarray) -> np.ndarray:
+    """First two columns of R, flattened -> 6D continuous rotation (Zhou CVPR 2019).
+
+    Identical to _rotmat_to_6d in drone_race_env.py.
+    """
+    return np.concatenate([R[:, 0], R[:, 1]]).astype(np.float32)
+
+
 class PolicyNet(nn.Module):
     """Policy head mirroring SB3 MultiInputPolicy's mlp_extractor.policy_net + action_net.
 
@@ -108,6 +138,7 @@ class SCUBALabAdapter:
         self._load_weights(checkpoint)
         print(f"[SCUBA Lab] [OK] Feature extractor + policy head loaded (strict=True)")
         self._last_state_log = 0.0
+        self._prev_action = np.zeros(4, dtype=np.float32)  # [throttle, roll, pitch, yaw]
 
     def _load_weights(self, checkpoint: dict):
         """Load weights from a pre-loaded checkpoint dict with strict=True.
@@ -220,26 +251,49 @@ class SCUBALabAdapter:
 
         image_input = image_input.astype(np.uint8)
 
-        # Build state vector from telemetry (19D state)
-        position = np.array(telemetry.get('position', [0, 0, 0]), dtype=np.float32)
-        velocity = np.array(telemetry.get('velocity', [0, 0, 0]), dtype=np.float32)
-        orientation = np.array(telemetry.get('orientation', [0, 0, 0]), dtype=np.float32)
+        # Build 19D state matching _get_minimal_state() in drone_race_env.py.
+        # Layout: rot_6d(6) + lin_vel(3) + ang_rates(3) + prev_action(4) + position(3)
+        # See obsidian/state-vector-fix.md for the full dim-by-dim spec.
 
-        # Concatenate and pad to 19D
-        state = np.concatenate([position, velocity, orientation])
-        state = np.pad(state, (0, max(0, 19 - len(state))), mode='constant')[:19]
+        # d0-5: 6D rotation — build body→world R from ZYX Euler, extract first two cols
+        rpy = np.array(telemetry.get('orientation', [0.0, 0.0, 0.0]), dtype=np.float32)
+        R = _euler_to_rotmat(float(rpy[0]), float(rpy[1]), float(rpy[2]))
+        rot_6d = _rotmat_to_6d(R)                                          # (6,)
+
+        # d6-8: linear velocity (world/NED frame, m/s) from LOCAL_POSITION_NED
+        lin_vel = np.array(
+            telemetry.get('linear_velocity', [0.0, 0.0, 0.0]), dtype=np.float32
+        )                                                                   # (3,)
+
+        # d9-11: body angular rates (rad/s) from ATTITUDE.rollspeed/pitchspeed/yawspeed
+        #        (or HIGHRES_IMU gyro if that message arrived most recently)
+        ang_rates = np.array(
+            telemetry.get('velocity', [0.0, 0.0, 0.0]), dtype=np.float32
+        )                                                                   # (3,)
+
+        # d12-15: previous action (throttle, roll, pitch, yaw) normalized
+        #         initialised to zeros; updated by predict_action() each step
+        prev_action = self._prev_action.copy()                             # (4,)
+
+        # d16-18: position (world/NED frame, m) from LOCAL_POSITION_NED
+        position = np.array(
+            telemetry.get('position', [0.0, 0.0, 0.0]), dtype=np.float32
+        )                                                                   # (3,)
+
+        state = np.concatenate([rot_6d, lin_vel, ang_rates, prev_action, position])
+        # assert state.shape == (19,)  — always true by construction above
 
         now = time.time()
         if now - self._last_state_log >= 1.0:
             self._last_state_log = now
             _log.info(
                 "[State 19D fed to model]\n"
-                "  d0-2   pos(x,y,z)    = [%+.3f %+.3f %+.3f]  (expect: rot_6d col0)\n"
-                "  d3-5   vel(ang_rate)  = [%+.3f %+.3f %+.3f]  (expect: rot_6d col1)\n"
-                "  d6-8   ori(rpy euler) = [%+.3f %+.3f %+.3f]  (expect: vio_linear_vel)\n"
-                "  d9-11  zeros          = [%+.3f %+.3f %+.3f]  (expect: vio_ang_rates)\n"
-                "  d12-15 zeros          = [%+.3f %+.3f %+.3f %+.3f]  (expect: prev_action)\n"
-                "  d16-18 zeros          = [%+.3f %+.3f %+.3f]  (expect: vio_position)",
+                "  d0-2   rot_6d col0 (body-x in world) = [%+.3f %+.3f %+.3f]\n"
+                "  d3-5   rot_6d col1 (body-y in world) = [%+.3f %+.3f %+.3f]\n"
+                "  d6-8   lin_vel NED (vx,vy,vz m/s)   = [%+.3f %+.3f %+.3f]\n"
+                "  d9-11  ang_rates body (rad/s)        = [%+.3f %+.3f %+.3f]\n"
+                "  d12-15 prev_action [thr,r,p,y]       = [%+.3f %+.3f %+.3f %+.3f]\n"
+                "  d16-18 position NED (x,y,z m)        = [%+.3f %+.3f %+.3f]",
                 state[0], state[1], state[2],
                 state[3], state[4], state[5],
                 state[6], state[7], state[8],
@@ -281,6 +335,9 @@ class SCUBALabAdapter:
         # Clamp: throttle [0, 1], roll/pitch/yaw [-1, 1]
         action[0] = np.clip(action[0], 0.0, 1.0)  # throttle
         action[1:] = np.clip(action[1:], -1.0, 1.0)  # roll, pitch, yaw
+
+        # Store for next step's prev_action dim (d12-15 of the 19D state).
+        self._prev_action = action.copy()
 
         return action
 
