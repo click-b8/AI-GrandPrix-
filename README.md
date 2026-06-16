@@ -3,6 +3,75 @@
 
 ---
 
+# 🔧 ACTIVE DEBUGGING — Live Integration (June 15, 2026)
+
+> **Read this before the status tables below.** The "✅ Current Status"
+> and "Live Stack Validation" sections further down predate live
+> simulator integration and are partially superseded by the findings
+> here. The system is **not yet flying the course.** Do not treat the
+> deployment as submission-ready.
+
+## Where we are
+
+The client now connects, arms, and the drone **lifts off under model
+control** — but it does **not navigate the course.** `active_gate`
+stays at 0 for the entire run. Root cause identified (below); fix in
+progress.
+
+## Confirmed working (verified against live DCL sim)
+
+| Item | Evidence |
+|------|----------|
+| MAVLink transport on UDP 14550 | ATTITUDE + LOCAL_POSITION_NED parsed; commands land |
+| Race-state detection | ENCAPSULATED_DATA sub-type 1 parsed; `race_start_boot_time_ms` flips ≥0 on green flag |
+| Arm/thrust gate | Drone stays `armed=True` (base_mode 0xc1) through standby→race; no longer disarms |
+| Model takes control at race start | First real command ~46 ms after green flag |
+| Liftoff | Drone leaves the ground under model control, every run |
+
+## Root cause of "won't fly the course" — STATE VECTOR MISMATCH
+
+`process_observation()` in `dcl_adapter.py` feeds the model a 19-D state
+whose layout **does not match** the training layout in
+`_get_minimal_state()`. Every dimension is wrong:
+
+| Dims | Training expects | We currently send |
+|------|------------------|-------------------|
+| 0–5  | 6D rotation (two cols of body→world R) | position (3) + angular rates (3) |
+| 6–8  | linear velocity (world) | Euler angles |
+| 9–11 | body angular rates | zeros |
+| 12–15| previous action | zeros |
+| 16–18| position | zeros |
+
+The model receives noise, so it floors thrust (~1.0) and commands
+sustained ~3 rad/s roll — it thrashes rather than tracking gate 0. The
+24-D non-vision state has a gate slot, but the **19-D vision state does
+not** — gate targeting is done entirely by the CNN on the FPV image, so
+no gate-position feed is required; the fix is purely the state layout.
+
+**Next action:** rewrite `process_observation()` to mirror
+`_get_minimal_state()` exactly (units, frames, 6D-rotation
+construction). Adapter-only change; model untouched.
+
+## Open items found during live debugging
+
+| Item | Detail | Severity |
+|------|--------|----------|
+| State-vector layout | All 19 dims mismatched vs training (above) | **BLOCKER** |
+| Inference on CPU | `Device: cpu` caps control loop at ~20 Hz; move to GPU | High |
+| Vision chunk drops | 370→1150 dropped as loop falls behind 30 Hz stream | High (symptom of CPU bottleneck) |
+| Control rate vs README | Logs show 250 Hz / port 14550; README says 50 Hz / 14540 — reconcile | Medium |
+| 250 Hz vs spec | VADR-TS-002 §4.4 caps command rate at <100 Hz; clamp before submission | Medium |
+| Shutdown traceback | KeyboardInterrupt/CancelledError uncaught on teardown (cosmetic) | Low |
+
+## Diagnostics currently in the code (remove/quiet before submission)
+
+- `[Race Status]` — race_start_boot_time_ms / active_gate / race_finish_ns
+- `[Sim HB]` — armed / base_mode / system_status
+- `[CMD out]` — race_started / thrust / body rates sent to wire
+- `[State 19D fed to model]` — per-dimension state dump
+
+---
+
 ## ⚡ Current Status (May 28, 2026)
 
 | Item | Status |
