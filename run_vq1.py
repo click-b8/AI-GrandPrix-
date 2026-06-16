@@ -234,16 +234,32 @@ class _MAVLinkReceiver:
                         logger.debug("[Race Status] unpack error: %s", exc)
                     else:
                         global _race_started
-                        if race_start_ms >= 0 and not _race_started:
+                        # race_start_ms is the server clock value (ms since sim
+                        # boot) AT WHICH the race goes live — a future timestamp
+                        # during the "get ready" countdown, < 0 before it. The
+                        # race is actually GO only once the current server clock
+                        # (sim_boot_ms) reaches it. Gating on race_start_ms >= 0
+                        # fired at the top of the countdown and got us DQ'd for
+                        # an early start. Both fields are the same clock/unit, so
+                        # they are directly comparable. See PyAIPilot mavlink_rx
+                        # on_race_status() field comments.
+                        race_is_go = race_start_ms >= 0 and sim_boot_ms >= race_start_ms
+                        if race_is_go and not _race_started:
                             _race_started = True
-                            logger.info("[Race] STARTED — model output unblocked")
+                            logger.info(
+                                "[Race] GO — sim_boot=%d >= race_start=%d, model output unblocked",
+                                sim_boot_ms, race_start_ms,
+                            )
                         now = time.time()
                         if now - self._last_race_log >= 1.0:
                             self._last_race_log = now
+                            # delta > 0 = countdown running (GO is in the future);
+                            # delta <= 0 = race live. Watch delta cross 0 at "Go!".
                             logger.info(
-                                "[Race Status] race_start_boot_time_ms=%d  "
+                                "[Race Status] sim_boot=%d  race_start=%d  delta=%d  "
                                 "active_gate=%d  race_finish_ns=%d",
-                                race_start_ms, active_gate, race_finish_ns,
+                                sim_boot_ms, race_start_ms, race_start_ms - sim_boot_ms,
+                                active_gate, race_finish_ns,
                             )
 
 
