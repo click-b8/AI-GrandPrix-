@@ -48,6 +48,35 @@ def _rotmat_to_6d(R: np.ndarray) -> np.ndarray:
     return np.concatenate([R[:, 0], R[:, 1]]).astype(np.float32)
 
 
+# NED -> training-frame basis change.
+#
+# The DCL sim reports attitude in NED: z-down world, FRD body (Forward-Right-
+# Down). The training env (MuJoCo) is z-up world, FLU body (Forward-Left-Up).
+# The two differ by a 180 deg rotation about the forward (x) axis:
+#     C = diag(1, -1, -1) = Rx(pi)
+# It keeps the forward axis (heading), flips the lateral (right<->left) and
+# vertical (down<->up) axes — exactly the FRD<->FLU / z-down<->z-up relabeling.
+#
+# Applied to the rotation matrix as a TWO-SIDED similarity:
+#     R_train = C @ R_ned @ C
+# (C is symmetric and its own inverse, so C == C.T == C^-1). This keeps the
+# result a proper rotation (det +1). A naive element/row flip of R_ned would
+# be a reflection (det -1) and corrupt the orientation — that is the trap we
+# are avoiding. After this transform a nose-up pitch yields a forward axis with
+# POSITIVE world-z (up), matching what the z-up-trained policy expects, instead
+# of the inverted forward-down that drove the full-thrust tumble.
+_NED_TO_TRAIN = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+
+
+def _ned_to_train_rotmat(R_ned: np.ndarray) -> np.ndarray:
+    """Re-express a body->NED rotation as a body->training-world rotation.
+
+    R_train = C @ R_ned @ C, with C = diag(1, -1, -1). Stays a proper rotation;
+    cross-checked against the training env's _quat_to_rotmat in the test suite.
+    """
+    return (_NED_TO_TRAIN @ R_ned @ _NED_TO_TRAIN).astype(np.float32)
+
+
 class PolicyNet(nn.Module):
     """Policy head mirroring SB3 MultiInputPolicy's mlp_extractor.policy_net + action_net.
 
@@ -263,18 +292,31 @@ class SCUBALabAdapter:
         # Layout: rot_6d(6) + lin_vel(3) + ang_rates(3) + prev_action(4) + position(3)
         # See obsidian/state-vector-fix.md for the full dim-by-dim spec.
 
-        # d0-5: 6D rotation — build body→world R from ZYX Euler, extract first two cols
+        # d0-5: 6D rotation. Build body→NED R from ZYX Euler, then re-express it
+        # in the training (z-up / FLU) frame before extracting the first two cols.
+        # Without this transform the vertical sense of the attitude is inverted
+        # vs training (z-down NED) — the model perceives nose-up as forward-down,
+        # which drove the full-thrust tumble. See _ned_to_train_rotmat above and
+        # obsidian/state-vector-fix.md §z-axis inversion.
         rpy = np.array(telemetry.get('orientation', [0.0, 0.0, 0.0]), dtype=np.float32)
-        R = _euler_to_rotmat(float(rpy[0]), float(rpy[1]), float(rpy[2]))
+        R_ned = _euler_to_rotmat(float(rpy[0]), float(rpy[1]), float(rpy[2]))
+        R = _ned_to_train_rotmat(R_ned)
         rot_6d = _rotmat_to_6d(R)                                          # (6,)
 
-        # d6-8: linear velocity (world/NED frame, m/s) from LOCAL_POSITION_NED
+        # d6-8: linear velocity (m/s) from LOCAL_POSITION_NED. NED is z-down;
+        # training is z-up, so negate the vertical component (vz). Horizontal
+        # (vx, vy) left as-is — see open item on horizontal-frame alignment.
         lin_vel = np.array(
             telemetry.get('linear_velocity', [0.0, 0.0, 0.0]), dtype=np.float32
         )                                                                   # (3,)
+        lin_vel[2] = -lin_vel[2]                                            # NED down -> z-up
 
         # d9-11: body angular rates (rad/s) from ATTITUDE.rollspeed/pitchspeed/yawspeed
-        #        (or HIGHRES_IMU gyro if that message arrived most recently)
+        #        (or HIGHRES_IMU gyro if that message arrived most recently).
+        # OPEN ITEM: under the NED/FRD->z-up/FLU change, pitch- and yaw-rate signs
+        # are suspect (body-y/z flip). Left UNCHANGED on purpose — we fix the
+        # vertical translation/attitude first, then test the rate signs in
+        # isolation. See obsidian/state-vector-fix.md §open items.
         ang_rates = np.array(
             telemetry.get('velocity', [0.0, 0.0, 0.0]), dtype=np.float32
         )                                                                   # (3,)
@@ -283,10 +325,12 @@ class SCUBALabAdapter:
         #         initialised to zeros; updated by predict_action() each step
         prev_action = self._prev_action.copy()                             # (4,)
 
-        # d16-18: position (world/NED frame, m) from LOCAL_POSITION_NED
+        # d16-18: position (m) from LOCAL_POSITION_NED. NED is z-down; training is
+        # z-up, so negate the vertical component (z). Horizontal (x, y) left as-is.
         position = np.array(
             telemetry.get('position', [0.0, 0.0, 0.0]), dtype=np.float32
         )                                                                   # (3,)
+        position[2] = -position[2]                                         # NED down -> z-up
 
         state = np.concatenate([rot_6d, lin_vel, ang_rates, prev_action, position])
         # assert state.shape == (19,)  — always true by construction above
@@ -296,12 +340,12 @@ class SCUBALabAdapter:
             self._last_state_log = now
             _log.info(
                 "[State 19D fed to model]\n"
-                "  d0-2   rot_6d col0 (body-x in world) = [%+.3f %+.3f %+.3f]\n"
-                "  d3-5   rot_6d col1 (body-y in world) = [%+.3f %+.3f %+.3f]\n"
-                "  d6-8   lin_vel NED (vx,vy,vz m/s)   = [%+.3f %+.3f %+.3f]\n"
-                "  d9-11  ang_rates body (rad/s)        = [%+.3f %+.3f %+.3f]\n"
-                "  d12-15 prev_action [thr,r,p,y]       = [%+.3f %+.3f %+.3f %+.3f]\n"
-                "  d16-18 position NED (x,y,z m)        = [%+.3f %+.3f %+.3f]",
+                "  d0-2   rot_6d col0 (body-x, z-up frame) = [%+.3f %+.3f %+.3f]\n"
+                "  d3-5   rot_6d col1 (body-y, z-up frame) = [%+.3f %+.3f %+.3f]\n"
+                "  d6-8   lin_vel z-up (vx,vy,-vz m/s)     = [%+.3f %+.3f %+.3f]\n"
+                "  d9-11  ang_rates body (rad/s, RAW NED)  = [%+.3f %+.3f %+.3f]\n"
+                "  d12-15 prev_action [thr,r,p,y]          = [%+.3f %+.3f %+.3f %+.3f]\n"
+                "  d16-18 position z-up (x,y,-z m)         = [%+.3f %+.3f %+.3f]",
                 state[0], state[1], state[2],
                 state[3], state[4], state[5],
                 state[6], state[7], state[8],

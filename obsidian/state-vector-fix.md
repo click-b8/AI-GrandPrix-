@@ -117,3 +117,40 @@ Root causes:
 3. `telemetry["velocity"]` (ang_rates) → sent as dims 3-5 (should be dims 9-11)
 4. `linear_velocity` never in `latest_telemetry` → always zeros in dims 6-8
 5. `_prev_action` never stored → always zeros in dims 12-15
+
+---
+
+## §z-axis inversion — NED (z-down) vs training (z-up)
+
+Diagnosed from the first legal-start run: after GO the policy pinned
+`thrust=1.0` and tumbled (active_gate never left 0; drone fell to +342 m NED).
+Root cause: a **perception/actuation asymmetry on the vertical axis**.
+
+- Training (MuJoCo): z-up world, FLU body. State pos-z = +up, vz = +ascending;
+  positive thrust → up. All consistent.
+- Deployment fed **raw NED** (z-down): pos-z = +down, vz = +descending — but the
+  thrust the model commands still produces **up**. So climbing reads to the model
+  as "falling," and it commands more thrust → runaway to 1.0; the inverted
+  attitude z-rows corrupt "which way is down" → tumble.
+
+### Fix applied (adapter-only, model untouched)
+
+| Case | Dims | Correction |
+|------|------|-----------|
+| linear velocity | 8 (vz) | negate z on ingest |
+| position | 18 (z) | negate z on ingest |
+| rot_6d | 0–5 | re-express attitude via `R_train = C @ R_ned @ C`, `C = diag(1,-1,-1)` (Rx 180°, NED/FRD → z-up/FLU). Proper rotation (det +1), NOT an element flip. Cross-checked against training `_quat_to_rotmat`. |
+
+### Open items — DEFER, test one variable at a time AFTER the vertical fix is confirmed in flight
+
+1. **Body angular rates (dims 9–11)** — left **RAW NED** for now. Under the
+   FRD→FLU body change, pitch-rate and yaw-rate signs are suspect (body-y/z
+   flip). Test in isolation once the vertical fix is validated.
+2. **Horizontal-frame alignment** — the rot_6d transform `C = diag(1,-1,-1)`
+   also flips the **lateral (y)** sign, but the velocity/position fix negates
+   **z only** (keeps y). These agree on the vertical (the known bug) but embody
+   different horizontal assumptions. The true NED→training horizontal relation
+   (lateral sign + any yaw/heading offset between NED-North and training-x) is
+   **unknown from code alone** — confirm empirically. If the drone tracks
+   vertically but drifts laterally/heading-wrong, revisit `C` (candidates:
+   keep y-flip and also flip vz/pos-y, or an ENU-style swap).

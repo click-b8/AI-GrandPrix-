@@ -588,6 +588,95 @@ class TestStateVector:
         )
 
     # ------------------------------------------------------------------
+    # NED -> training-frame correction (z-axis inversion fix) — no model
+    # ------------------------------------------------------------------
+
+    def test_corrected_rot6d_valid_and_matches_quat_oracle(self):
+        """rot_6d after the NED->training-frame transform must (a) be a valid
+        proper rotation and (b) match the training env's _quat_to_rotmat for
+        the equivalent attitude.
+
+        The oracle is built independently of our matrix-similarity path: take
+        the NED quaternion, conjugate it by q_C = Rx(180 deg) = (0,1,0,0) via
+        explicit Hamilton products, then push it through the TRAINING
+        _quat_to_rotmat. Agreement proves the transform is implemented
+        correctly AND stays a rotation (the reflection trap is caught by (a)).
+        """
+        sys.path.insert(0, ROOT)
+        from drone_race_env import _quat_to_rotmat
+        from dcl_adapter import _euler_to_rotmat, _ned_to_train_rotmat, _rotmat_to_6d
+
+        roll, pitch, yaw = 0.3, -0.2, 1.1
+
+        # our path: NED Euler -> R_ned -> similarity -> R_train -> rot_6d
+        R_train = _ned_to_train_rotmat(_euler_to_rotmat(roll, pitch, yaw))
+        rot6d_ours = _rotmat_to_6d(R_train)
+
+        # (a) validity — orthonormal with det +1 (guards against a reflection)
+        np.testing.assert_allclose(R_train @ R_train.T, np.eye(3), atol=1e-5,
+                                   err_msg="R_train not orthonormal")
+        assert abs(float(np.linalg.det(R_train)) - 1.0) < 1e-5, (
+            f"det(R_train)={float(np.linalg.det(R_train)):.4f} != +1 "
+            "— transform produced a reflection, not a rotation"
+        )
+
+        # (b) oracle via the training quaternion path
+        cr, sr = np.cos(roll / 2),  np.sin(roll / 2)
+        cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
+        cy, sy = np.cos(yaw / 2),   np.sin(yaw / 2)
+        q_ned = np.array([
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ])
+
+        def _qmul(a, b):
+            w1, x1, y1, z1 = a
+            w2, x2, y2, z2 = b
+            return np.array([
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            ])
+
+        q_C     = np.array([0.0,  1.0, 0.0, 0.0])   # Rx(180 deg)
+        q_C_inv = np.array([0.0, -1.0, 0.0, 0.0])   # unit-quaternion inverse
+        q_train = _qmul(_qmul(q_C, q_ned), q_C_inv)
+        R_ref = _quat_to_rotmat(*q_train)
+        rot6d_ref = np.concatenate([R_ref[:, 0], R_ref[:, 1]])
+
+        np.testing.assert_allclose(
+            rot6d_ours, rot6d_ref, atol=1e-5,
+            err_msg="corrected rot_6d disagrees with _quat_to_rotmat oracle"
+        )
+
+    def test_corrected_rot6d_level_is_identity(self):
+        """Level flight (r=p=y=0) must still map to identity -> [1,0,0,0,1,0].
+        The transform C @ I @ C = C^2 = I, so level is unchanged."""
+        from dcl_adapter import _euler_to_rotmat, _ned_to_train_rotmat, _rotmat_to_6d
+        R = _ned_to_train_rotmat(_euler_to_rotmat(0.0, 0.0, 0.0))
+        np.testing.assert_allclose(R, np.eye(3), atol=1e-6)
+        np.testing.assert_allclose(_rotmat_to_6d(R), [1, 0, 0, 0, 1, 0], atol=1e-6)
+
+    def test_corrected_rot6d_nose_up_points_forward_up(self):
+        """Regression for the inversion: a nose-up pitch must yield a forward
+        axis with POSITIVE world-z (up) AFTER correction. Raw NED gives the
+        inverted forward-down (the bug that drove the tumble)."""
+        from dcl_adapter import _euler_to_rotmat, _ned_to_train_rotmat, _rotmat_to_6d
+        pitch = np.radians(30)
+        rot6d_raw  = _rotmat_to_6d(_euler_to_rotmat(0.0, pitch, 0.0))
+        rot6d_corr = _rotmat_to_6d(_ned_to_train_rotmat(_euler_to_rotmat(0.0, pitch, 0.0)))
+        # index 2 = world-z component of col0 (the forward/body-x axis)
+        assert rot6d_raw[2] < 0, (
+            f"raw NED nose-up should give forward-DOWN (the bug); got {rot6d_raw[2]:.3f}"
+        )
+        assert rot6d_corr[2] > 0, (
+            f"corrected nose-up must give forward-UP (z-up training); got {rot6d_corr[2]:.3f}"
+        )
+
+    # ------------------------------------------------------------------
     # Wiring — no model required
     # ------------------------------------------------------------------
 
@@ -643,35 +732,40 @@ class TestStateVector:
         )
 
     def test_state_dims_match_expected_values(self):
-        """Hand-compute expected rot_6d and check d0-5 match; verify d6-8, d9-11, d16-18."""
+        """Verify each dim group lands in the right slot with the NED->z-up
+        correction applied: rot_6d transformed, vz and pos-z negated, ang_rates
+        raw, prev_action zero on first call."""
         if not os.path.exists(self.DISTILL_ZIP):
             pytest.skip("model zip absent")
         import torch
-        from dcl_adapter import SCUBALabAdapter, _euler_to_rotmat, _rotmat_to_6d
+        from dcl_adapter import (
+            SCUBALabAdapter, _euler_to_rotmat, _ned_to_train_rotmat, _rotmat_to_6d,
+        )
         adapter = SCUBALabAdapter(self.DISTILL_ZIP)
 
         roll, pitch, yaw = 0.2, -0.15, 0.8
         telemetry = {
             'orientation':     [roll, pitch, yaw],
-            'velocity':        [0.1, 0.2, 0.3],        # ang_rates -> d9-11
-            'position':        [10.0, 20.0, 30.0],     # -> d16-18
-            'linear_velocity': [1.5, 2.5, 3.5],        # -> d6-8
+            'velocity':        [0.1, 0.2, 0.3],        # ang_rates -> d9-11 (raw)
+            'position':        [10.0, 20.0, 30.0],     # -> d16-18 (z negated)
+            'linear_velocity': [1.5, 2.5, 3.5],        # -> d6-8 (vz negated)
         }
         frame = np.zeros((48, 48, 3), dtype=np.uint8)
         _, state_tensor = adapter.process_observation(telemetry, frame)
         state = state_tensor.squeeze(0).cpu().numpy()
 
-        expected_rot6d = _rotmat_to_6d(_euler_to_rotmat(roll, pitch, yaw))
+        # d0-5: rot_6d built from the NED->training-frame-corrected matrix
+        expected_rot6d = _rotmat_to_6d(_ned_to_train_rotmat(_euler_to_rotmat(roll, pitch, yaw)))
         np.testing.assert_allclose(state[0:6],  expected_rot6d,       atol=1e-5,
                                    err_msg="d0-5 (rot_6d) mismatch")
-        np.testing.assert_allclose(state[6:9],  [1.5, 2.5, 3.5],      atol=1e-5,
-                                   err_msg="d6-8 (linear_velocity) mismatch")
+        np.testing.assert_allclose(state[6:9],  [1.5, 2.5, -3.5],     atol=1e-5,
+                                   err_msg="d6-8 (linear_velocity, vz negated) mismatch")
         np.testing.assert_allclose(state[9:12], [0.1, 0.2, 0.3],      atol=1e-5,
-                                   err_msg="d9-11 (ang_rates) mismatch")
+                                   err_msg="d9-11 (ang_rates, raw NED) mismatch")
         np.testing.assert_allclose(state[12:16], [0, 0, 0, 0],        atol=1e-5,
                                    err_msg="d12-15 (prev_action) should be zero on first call")
-        np.testing.assert_allclose(state[16:19], [10.0, 20.0, 30.0],  atol=1e-5,
-                                   err_msg="d16-18 (position) mismatch")
+        np.testing.assert_allclose(state[16:19], [10.0, 20.0, -30.0], atol=1e-5,
+                                   err_msg="d16-18 (position, z negated) mismatch")
 
     def test_prev_action_updates_after_step(self):
         """After one step(), _prev_action must equal the returned command values."""
