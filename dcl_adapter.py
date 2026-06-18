@@ -313,13 +313,17 @@ class SCUBALabAdapter:
 
         # d9-11: body angular rates (rad/s) from ATTITUDE.rollspeed/pitchspeed/yawspeed
         #        (or HIGHRES_IMU gyro if that message arrived most recently).
-        # OPEN ITEM: under the NED/FRD->z-up/FLU change, pitch- and yaw-rate signs
-        # are suspect (body-y/z flip). Left UNCHANGED on purpose — we fix the
-        # vertical translation/attitude first, then test the rate signs in
-        # isolation. See obsidian/state-vector-fix.md §open items.
+        # NED reports rates in the FRD aircraft body frame; training expects them
+        # in the FLU body frame. FRD->FLU is the SAME Rx(180) = C = diag(1,-1,-1)
+        # as the vertical fix, applied as a single-sided product to the vector:
+        # ang_rates_train = C @ ang_rates_ned (roll kept, pitch & yaw negated).
+        # Angular velocity is a pseudovector but C is a proper rotation (det +1),
+        # so it transforms like an ordinary vector. Cross-checked against the
+        # training env's R.T @ qvel[3:6] in the test suite.
         ang_rates = np.array(
             telemetry.get('velocity', [0.0, 0.0, 0.0]), dtype=np.float32
         )                                                                   # (3,)
+        ang_rates = (_NED_TO_TRAIN @ ang_rates).astype(np.float32)         # FRD body -> FLU body
 
         # d12-15: previous action (throttle, roll, pitch, yaw) normalized
         #         initialised to zeros; updated by predict_action() each step
@@ -343,7 +347,7 @@ class SCUBALabAdapter:
                 "  d0-2   rot_6d col0 (body-x, z-up frame) = [%+.3f %+.3f %+.3f]\n"
                 "  d3-5   rot_6d col1 (body-y, z-up frame) = [%+.3f %+.3f %+.3f]\n"
                 "  d6-8   lin_vel z-up (vx,vy,-vz m/s)     = [%+.3f %+.3f %+.3f]\n"
-                "  d9-11  ang_rates body (rad/s, RAW NED)  = [%+.3f %+.3f %+.3f]\n"
+                "  d9-11  ang_rates FLU body (rad/s)        = [%+.3f %+.3f %+.3f]\n"
                 "  d12-15 prev_action [thr,r,p,y]          = [%+.3f %+.3f %+.3f %+.3f]\n"
                 "  d16-18 position z-up (x,y,-z m)         = [%+.3f %+.3f %+.3f]",
                 state[0], state[1], state[2],

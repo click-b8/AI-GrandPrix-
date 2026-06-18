@@ -141,12 +141,29 @@ Root cause: a **perception/actuation asymmetry on the vertical axis**.
 | position | 18 (z) | negate z on ingest |
 | rot_6d | 0–5 | re-express attitude via `R_train = C @ R_ned @ C`, `C = diag(1,-1,-1)` (Rx 180°, NED/FRD → z-up/FLU). Proper rotation (det +1), NOT an element flip. Cross-checked against training `_quat_to_rotmat`. |
 
-### Open items — DEFER, test one variable at a time AFTER the vertical fix is confirmed in flight
+### Body angular rates (dims 9–11) — RESOLVED (FRD→FLU)
 
-1. **Body angular rates (dims 9–11)** — left **RAW NED** for now. Under the
-   FRD→FLU body change, pitch-rate and yaw-rate signs are suspect (body-y/z
-   flip). Test in isolation once the vertical fix is validated.
-2. **Horizontal-frame alignment** — the rot_6d transform `C = diag(1,-1,-1)`
+After the vertical fix flew, the drone still full-thrusted and tumbled with body
+rates hitting ±18 rad/s — all dims 9–11 were still **raw NED (FRD body)**. The
+training env feeds `ang_vel_body = R.T @ qvel[3:6]` in the **FLU body frame**
+(`drone_race_env.py` no-VIO path). FRD→FLU is the same `C = diag(1,-1,-1) =
+Rx(180°)` as the vertical fix, applied single-sided to the vector:
+
+```
+ω_train = C @ ω_ned        # roll kept, pitch & yaw negated
+```
+
+Provable (not just plausible): the body-frame relationship is unambiguous (no
+heading-offset freedom — forward is forward), and it falls out of the training
+algebra: `ω_body_train = R_train.T @ (C ω_world_ned) = C R_ned.T ω_world_ned =
+C ω_body_ned`, using `R_train = C R_ned C` and `C·C = I`. Angular velocity is a
+pseudovector but `C` is a proper rotation (det +1) so it transforms like an
+ordinary vector. Cross-checked against the training `_quat_to_rotmat` via a
+world-frame oracle in `test_body_rates_ned_to_train_matches_world_frame_oracle`.
+
+### Open items — DEFER, test one variable at a time
+
+1. **Horizontal-frame alignment** — the rot_6d transform `C = diag(1,-1,-1)`
    also flips the **lateral (y)** sign, but the velocity/position fix negates
    **z only** (keeps y). These agree on the vertical (the known bug) but embody
    different horizontal assumptions. The true NED→training horizontal relation

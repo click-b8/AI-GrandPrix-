@@ -676,6 +676,51 @@ class TestStateVector:
             f"corrected nose-up must give forward-UP (z-up training); got {rot6d_corr[2]:.3f}"
         )
 
+    def test_body_rates_ned_to_train_matches_world_frame_oracle(self):
+        """d9-11 must be re-expressed FRD-body -> FLU-body via C = diag(1,-1,-1).
+        Independent oracle: pick a world angular velocity + attitude, derive the
+        training body rates the way the env does (R_train.T @ w_world_train, with
+        R_train from the quaternion-conjugation path), and confirm our C @ w_body_ned
+        lands on the same vector. Not a restatement of the helper: the oracle is
+        built from world-frame physics + the training _quat_to_rotmat."""
+        sys.path.insert(0, ROOT)
+        from drone_race_env import _quat_to_rotmat
+        from dcl_adapter import _euler_to_rotmat, _NED_TO_TRAIN
+
+        roll, pitch, yaw = 0.2, -0.4, 0.9
+        R_ned = _euler_to_rotmat(roll, pitch, yaw)          # body->NED-world
+        C = np.diag([1.0, -1.0, -1.0])
+
+        w_world_ned = np.array([0.7, -1.3, 2.1])            # known world angular vel
+        w_body_ned  = R_ned.T @ w_world_ned                 # what MAVLink reports (FRD body)
+
+        w_body_train_ours = _NED_TO_TRAIN @ w_body_ned      # conversion under test
+
+        # oracle: same motion in training frames (world vec by C; R_train via quat path)
+        cr, sr = np.cos(roll/2), np.sin(roll/2)
+        cp, sp = np.cos(pitch/2), np.sin(pitch/2)
+        cy, sy = np.cos(yaw/2),  np.sin(yaw/2)
+        q_ned = np.array([cr*cp*cy + sr*sp*sy, sr*cp*cy - cr*sp*sy,
+                          cr*sp*cy + sr*cp*sy, cr*cp*sy - sr*sp*cy])
+
+        def _qmul(a, b):
+            w1, x1, y1, z1 = a
+            w2, x2, y2, z2 = b
+            return np.array([w1*w2 - x1*x2 - y1*y2 - z1*z2,
+                             w1*x2 + x1*w2 + y1*z2 - z1*y2,
+                             w1*y2 - x1*z2 + y1*w2 + z1*x2,
+                             w1*z2 + x1*y2 - y1*x2 + z1*w2])
+
+        q_C, q_Ci = np.array([0., 1., 0., 0.]), np.array([0., -1., 0., 0.])
+        R_train = _quat_to_rotmat(*_qmul(_qmul(q_C, q_ned), q_Ci))
+        w_body_train_ref = R_train.T @ (C @ w_world_ned)
+
+        np.testing.assert_allclose(w_body_train_ours, w_body_train_ref, atol=1e-5,
+            err_msg="converted body rates disagree with world-frame oracle")
+        # human-readable consequence: roll kept, pitch & yaw negated
+        np.testing.assert_allclose(
+            w_body_train_ours, [w_body_ned[0], -w_body_ned[1], -w_body_ned[2]], atol=1e-6)
+
     # ------------------------------------------------------------------
     # Wiring — no model required
     # ------------------------------------------------------------------
@@ -746,7 +791,7 @@ class TestStateVector:
         roll, pitch, yaw = 0.2, -0.15, 0.8
         telemetry = {
             'orientation':     [roll, pitch, yaw],
-            'velocity':        [0.1, 0.2, 0.3],        # ang_rates -> d9-11 (raw)
+            'velocity':        [0.1, 0.2, 0.3],        # ang_rates -> d9-11 (FRD->FLU: pitch,yaw negated)
             'position':        [10.0, 20.0, 30.0],     # -> d16-18 (z negated)
             'linear_velocity': [1.5, 2.5, 3.5],        # -> d6-8 (vz negated)
         }
@@ -760,8 +805,8 @@ class TestStateVector:
                                    err_msg="d0-5 (rot_6d) mismatch")
         np.testing.assert_allclose(state[6:9],  [1.5, 2.5, -3.5],     atol=1e-5,
                                    err_msg="d6-8 (linear_velocity, vz negated) mismatch")
-        np.testing.assert_allclose(state[9:12], [0.1, 0.2, 0.3],      atol=1e-5,
-                                   err_msg="d9-11 (ang_rates, raw NED) mismatch")
+        np.testing.assert_allclose(state[9:12], [0.1, -0.2, -0.3],    atol=1e-5,
+                                   err_msg="d9-11 (ang_rates FRD->FLU, pitch/yaw negated) mismatch")
         np.testing.assert_allclose(state[12:16], [0, 0, 0, 0],        atol=1e-5,
                                    err_msg="d12-15 (prev_action) should be zero on first call")
         np.testing.assert_allclose(state[16:19], [10.0, 20.0, -30.0], atol=1e-5,
