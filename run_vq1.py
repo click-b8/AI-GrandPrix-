@@ -144,6 +144,8 @@ _latest_telemetry = {
     "linear_velocity":   (0.0, 0.0, 0.0),   # (vx, vy, vz) m/s NED   — from LOCAL_POSITION_NED
 }
 _race_started: bool = False  # set True by _MAVLinkReceiver when race_start_boot_time_ms >= 0
+START_MARGIN_MS = 100  # delay GO this far past race_start to absorb detect lag;
+                       # starting late is safe, starting early is an instant DQ.
 
 
 class _MAVLinkReceiver:
@@ -243,12 +245,14 @@ class _MAVLinkReceiver:
                         # an early start. Both fields are the same clock/unit, so
                         # they are directly comparable. See PyAIPilot mavlink_rx
                         # on_race_status() field comments.
-                        race_is_go = race_start_ms >= 0 and sim_boot_ms >= race_start_ms
+                        race_is_go = race_start_ms >= 0 and sim_boot_ms >= race_start_ms + START_MARGIN_MS
                         if race_is_go and not _race_started:
                             _race_started = True
                             logger.info(
-                                "[Race] GO — sim_boot=%d >= race_start=%d, model output unblocked",
-                                sim_boot_ms, race_start_ms,
+                                "[Race] GO — sim_boot=%d >= race_start=%d + margin=%d "
+                                "(actual margin used = %d ms), model output unblocked",
+                                sim_boot_ms, race_start_ms, START_MARGIN_MS,
+                                sim_boot_ms - race_start_ms,
                             )
                         now = time.time()
                         if now - self._last_race_log >= 1.0:
