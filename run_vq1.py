@@ -143,9 +143,13 @@ _latest_telemetry = {
     "position":          (0.0, 0.0, 0.0),   # (x, y, z) m NED         — from LOCAL_POSITION_NED
     "linear_velocity":   (0.0, 0.0, 0.0),   # (vx, vy, vz) m/s NED   — from LOCAL_POSITION_NED
 }
-_race_started: bool = False  # set True by _MAVLinkReceiver when race_start_boot_time_ms >= 0
+_race_started: bool = False  # set True by _MAVLinkReceiver once GO fires this session
+_countdown_armed: bool = False  # True once a GENUINE future countdown is observed
+_armed_race_start_ms: int = -1  # the fresh race_start latched when the countdown armed
 START_MARGIN_MS = 100  # delay GO this far past race_start to absorb detect lag;
                        # starting late is safe, starting early is an instant DQ.
+STALE_DELTA_MS = -10000  # race_start whose delta is below this is a stale echo from
+                         # a prior race (sim_boot already far past it) — ignore it.
 
 
 class _MAVLinkReceiver:
@@ -235,35 +239,53 @@ class _MAVLinkReceiver:
                     except struct.error as exc:
                         logger.debug("[Race Status] unpack error: %s", exc)
                     else:
-                        global _race_started
+                        global _race_started, _countdown_armed, _armed_race_start_ms
                         # race_start_ms is the server clock value (ms since sim
-                        # boot) AT WHICH the race goes live — a future timestamp
-                        # during the "get ready" countdown, < 0 before it. The
-                        # race is actually GO only once the current server clock
-                        # (sim_boot_ms) reaches it. Gating on race_start_ms >= 0
-                        # fired at the top of the countdown and got us DQ'd for
-                        # an early start. Both fields are the same clock/unit, so
-                        # they are directly comparable. See PyAIPilot mavlink_rx
-                        # on_race_status() field comments.
-                        race_is_go = race_start_ms >= 0 and sim_boot_ms >= race_start_ms + START_MARGIN_MS
-                        if race_is_go and not _race_started:
-                            _race_started = True
-                            logger.info(
-                                "[Race] GO — sim_boot=%d >= race_start=%d + margin=%d "
-                                "(actual margin used = %d ms), model output unblocked",
-                                sim_boot_ms, race_start_ms, START_MARGIN_MS,
-                                sim_boot_ms - race_start_ms,
-                            )
+                        # boot) AT WHICH the race goes live. Two failure modes:
+                        #   (1) Gating on race_start_ms >= 0 fired at the top of
+                        #       the countdown -> DQ'd for an early start.
+                        #   (2) At startup the sim echoes a STALE race_start from
+                        #       a prior race against a huge current sim_boot, so
+                        #       sim_boot >= race_start + margin is instantly true.
+                        # Fix: only arm GO-detection after we observe a GENUINE
+                        # countdown — race_start_ms >= 0 AND delta > 0 (the start
+                        # is really ahead of us). Latch that fresh race_start and
+                        # fire GO when sim_boot crosses the LATCHED value, never a
+                        # later stale echo. A wildly-negative delta is a stale echo
+                        # and is ignored for both arming and firing.
+                        delta = race_start_ms - sim_boot_ms
+                        is_stale = race_start_ms >= 0 and delta < STALE_DELTA_MS
+
+                        if not is_stale:
+                            if (not _countdown_armed) and race_start_ms >= 0 and delta > 0:
+                                _countdown_armed = True
+                                _armed_race_start_ms = race_start_ms
+                                logger.info(
+                                    "[Race] countdown armed — race_start=%d is %d ms ahead "
+                                    "(sim_boot=%d)", race_start_ms, delta, sim_boot_ms,
+                                )
+
+                            if (_countdown_armed and not _race_started
+                                    and sim_boot_ms >= _armed_race_start_ms + START_MARGIN_MS):
+                                _race_started = True
+                                logger.info(
+                                    "[Race] GO — sim_boot=%d >= armed race_start=%d + margin=%d "
+                                    "(actual margin used = %d ms), model output unblocked",
+                                    sim_boot_ms, _armed_race_start_ms, START_MARGIN_MS,
+                                    sim_boot_ms - _armed_race_start_ms,
+                                )
                         now = time.time()
                         if now - self._last_race_log >= 1.0:
                             self._last_race_log = now
                             # delta > 0 = countdown running (GO is in the future);
                             # delta <= 0 = race live. Watch delta cross 0 at "Go!".
+                            # armed=False until a genuine future countdown is seen;
+                            # stale=True flags a prior-race echo we ignore.
                             logger.info(
                                 "[Race Status] sim_boot=%d  race_start=%d  delta=%d  "
-                                "active_gate=%d  race_finish_ns=%d",
-                                sim_boot_ms, race_start_ms, race_start_ms - sim_boot_ms,
-                                active_gate, race_finish_ns,
+                                "armed=%s  stale=%s  active_gate=%d  race_finish_ns=%d",
+                                sim_boot_ms, race_start_ms, delta,
+                                _countdown_armed, is_stale, active_gate, race_finish_ns,
                             )
 
 
@@ -342,6 +364,13 @@ async def run(
         # Start TIMESYNC at 10 Hz (matches timesync.py from PyAIPilotExample).
         _timesync = DCLTimesync(sim_conn)
         _timesync.start()
+
+        # Reset race-start state for a fresh session so a stale race_start cached
+        # in module globals (or a prior race echoed on the wire) can't fire GO.
+        global _race_started, _countdown_armed, _armed_race_start_ms
+        _race_started = False
+        _countdown_armed = False
+        _armed_race_start_ms = -1
 
         # Start MAVLink receive loop to keep _latest_telemetry current.
         _mavlink_rx = _MAVLinkReceiver(sim_conn)
