@@ -5,15 +5,27 @@
 Operational checklist. If VQ1 submission were required tomorrow, this
 is what would break, in priority order.
 
-**Last updated: 2026-05-22**
+**Last updated: 2026-06-28**
 **VQ1 deadline:** May 2026.
 
 ## Status summary
 
-All deployment-layer blockers resolved as of 2026-04-22 (branch
-`fix/mavlink-complete`, merged to main). Spec gap analysis completed
-2026-05-14 against VADR-TS-002. Camera tilt fine-tune active on HPC
-(job 4656258). One blocker remains: vision stream (blocked on DCL sim).
+**Integration harness COMPLETE and verified end-to-end (2026-06-28).** The DCL
+sim shipped; the client connects, arms, holds thrust=0 through standby, achieves
+a clean legal race start (countdown-armed gate), streams + decodes FPV vision,
+feeds a verified 19-D observation, and flies under model control. See
+[[vq1-run-notes]] and [[current-plan]].
+
+**The remaining blocker is the policy/weights, not the harness.** No existing
+checkpoint navigates the course — the deployed `aigp_distill_final` flies but
+banks off the racing line ~2s after GO; the tilt fine-tune diverged. Next action
+is a fresh DGX training run to the verified observation spec ([[current-plan]]
+TASK 2).
+
+All deployment-layer blockers below were resolved 2026-04-22 (branch
+`fix/mavlink-complete`); the vision-stream blocker cleared when the DCL sim
+shipped; spec/frame fixes (z-up, FLU rates, 19-D layout, start gate) landed
+2026-06.
 
 ---
 

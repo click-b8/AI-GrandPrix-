@@ -66,7 +66,7 @@ Cross-referenced training config against VADR-TS-002:
 | FOV | 90° | 90° | ✅ Match |
 | Control rate | 50–120 Hz | 100 Hz | ✅ Within spec |
 
-## Active training run (2026-05-14)
+## Tilt fine-tune run (2026-05-14) — COMPLETED, DIVERGED
 
 **Job 4656258** on FAU HPC (shortq7-gpu, nodegpu partition):
 - Script: `train_finetune_tilt.py` (wrapper over `train_distill.py`)
@@ -74,9 +74,14 @@ Cross-referenced training config against VADR-TS-002:
 - Warmstart: `trained_vision_events/best_model/` if available, else scratch
 - Steps: 15,000,000
 - Config: `FPV_TILT_DEG=20`, `EVENT_CAMERA_ENABLED=False`
-- Output: `trained_finetune_tilt/aigp_distill_final.zip`
-- Self-resubmits via SIGUSR1 at 5 min before 5:55 wall time
-- Expected duration: ~6 hours on V100
+- Output: `aigp_finetune_tilt_final.zip` (== `aigp_distill_11600000_steps.zip`,
+  same SHA256 `1c5f6d3c…`)
+
+**Outcome (2026-06):** **diverged ~14M steps.** Flown through the verified
+harness — thrashes thrust, spins, crashes within ~15s, `active_gate` stuck at 0.
+NOT deployable. This is the model the root README mislabels as the "stable,
+DEPLOY THIS 11600000_steps" checkpoint. The real next step is a fresh DGX
+training run to the verified observation spec — see [[current-plan]] TASK 2.
 
 **Warmstart note:** `trained_finetune/aigp_finetune_final.zip` was
 confirmed state-based (`ActorCriticPolicy`, Box obs space) on
@@ -112,7 +117,7 @@ Measured on Apple M4 CPU only. Competition target is ~100 TOPS embedded.
 | Swift 100M | `trained_swift_100m/` | Final state expert; `aigp_racer_final` |
 | Distilled | `trained_distilled/` | Final distill run; `aigp_distill_final` |
 | Vision events | `trained_vision_events/` | Pure vision PPO warmstart for distill |
-| **Tilt fine-tune** | `trained_finetune_tilt/` | **Active — tilt +20°, events off, 15M steps** |
+| **Tilt fine-tune** | `trained_finetune_tilt/` | **Completed but DIVERGED ~14M — do not deploy (see above)** |
 
 ## See also
 

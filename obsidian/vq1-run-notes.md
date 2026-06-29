@@ -7,8 +7,10 @@ This run confirmed the full deployment harness works:
 - **Clean legal start** — countdown armed (delta > 0), GO fired at delta ≈ 0
   (at on-screen "Go!", not before), no DQ. The stale-clock start-gate fix held.
 - **Model in control** — drone armed and flew under policy output.
-- Captured on screen recording: `Recording_2026-06-28_VQ1_Good_Start.mp4`
-  (kept out of the git tree; attached to a GitHub Release — see below).
+- Captured on screen recording: `Recording 2026-06-28 VQ1 Good Start.mp4`
+  (37 MB, kept out of the git tree per `.gitignore *.mp4`; to be attached to a
+  GitHub Release as an asset, not committed). Source path:
+  `C:\Users\nohab\Desktop\AI GP\VQ1\Recording 2026-06-28 VQ1 Good Start.mp4`.
 
 ## Failure mode (confirmed by the FPV recording)
 

@@ -21,13 +21,16 @@ whether it can be deployed.
   (19D). See [[perception]], [[vision-model]].
 - **Action:** 4D CTBR — `[thrust ∈ [0,1], roll_rate, pitch_rate,
   yaw_rate ∈ [−1,1] × MAX_BODY_RATE]`.
-- **Validated:** not end-to-end. The `test_dcl_adapter.py` script that
-  claims to validate it points at a wrong path, and the adapter it
-  would validate loads only features, not policy. See
-  [[fragilities#The policy head is untrained at deployment]].
+- **Validated:** loads strict=True (feature extractor + policy head), and is
+  now the **deployed** model (commit `fe16627`). Flown end-to-end through the
+  verified harness: clean legal start, model in control, drone flies — but it
+  does NOT navigate the course (banks off the racing line ~2s after GO and
+  diverges). The adapter/observation path is verified correct; the limitation
+  is the **policy weights**, not the harness. See [[vq1-run-notes]].
 
-**To deploy:** do not use the current `dcl_adapter.py` as-is. See
-[[submission-readiness]] for the list of fixes.
+**To deploy:** `run_vq1.py` loads this directly as of `fe16627`. The harness is
+deployment-ready for a NEW model trained to the verified observation spec —
+see [[current-plan]] TASK 2.
 
 ## aigp_8gates_final.zip — state-based 8-gate racer
 
@@ -119,11 +122,15 @@ that claim should be updated or removed.
 
 For VQ1 (vision-based, DCL sim, no gate positions):
 
-- **`aigp_distill_final.zip`** is the only deployable option.
+- **`aigp_distill_final.zip`** is the currently-loaded model (`fe16627`) — the
+  only existing checkpoint that loads and flies, but it cannot navigate the
+  course (see [[vq1-run-notes]]).
+- `aigp_finetune_tilt_final.zip` (== `aigp_distill_11600000_steps.zip`) is
+  **diverged** — do not deploy.
 - State-based models cannot be used because DCL does not provide gates.
-- But the current deployment adapter (`dcl_adapter.py`) silently
-  discards the policy-head weights from this model. Fix the adapter
-  before trusting the submission.
+- **Real fix:** train a new model to the verified deployment observation spec
+  (48×48 RGB, +20° tilt, z-up frame, FLU rates, 19-D layout). See
+  [[current-plan]] TASK 2 — this is the critical path.
 
 For benchmark/comparison (privileged sim, does not need vision):
 
@@ -138,18 +145,22 @@ For benchmark/comparison (privileged sim, does not need vision):
 - [[fragilities]] — why the advertised path is wrong and the weights don't load
 - [[experiments-log]] — checkpoint ladders and what we have logs for
 
-## aigp_finetune_tilt_final.zip — VQ1 candidate (pending)
+## aigp_finetune_tilt_final.zip — DIVERGED, do not deploy
 
-- **Path (target):** `drone-race-sim/models_release/aigp_finetune_tilt_final.zip`
-- **Status:** Training in progress — HPC job 4654271, FAU shortq7-gpu
-- **Type:** Vision-based PPO, distilled via DAgger from state expert
-- **Training:** `train_finetune_tilt.py` (wrapper over `train_distill.py`),
-  15M steps, warm-start from `trained_vision_events` if available else scratch
-- **Teacher:** `trained_state_expert/aigp_state_final.zip`
+- **Path:** `models_release/aigp_finetune_tilt_final.zip` (present on disk).
+- **Status (2026-06):** training **completed but diverged ~14M steps**. Flown
+  through the verified harness across multiple sessions: thrashes thrust 0↔1,
+  spins, crashes within ~15s; `active_gate` never advances past 0.
+- **Type:** Vision-based PPO, RGB-only (6-channel), +20° tilt.
 - **Config delta from aigp_distill_final:**
   - `FPV_TILT_DEG`: 0° → **+20°** (VADR-TS-002 §3.8 match)
   - `EVENT_CAMERA_ENABLED`: True → **False** (RGB-only deployment)
   - Input channels: 14 → **6** (3 RGB × 2 stacked frames)
-- **Deployable:** Yes, once training completes and copied to `models_release/`
-- **Adapter:** `dcl_adapter.py` auto-detects 6ch input via CNN `in_channels`
-- **Entry point:** `run_vq1.py` prefers this over `aigp_distill_final` when present
+- **⚠️ Byte-identical duplicate:** `aigp_finetune_tilt_final.zip` and the
+  repo-root `aigp_distill_11600000_steps.zip` have the **same SHA256**
+  (`1c5f6d3c…`, 12,868,185 bytes). They are **one file under two names** — the
+  root README's "two distinct deploy models (stable vs backup)" claim is false.
+  The "11600000_steps / stable / DEPLOY THIS" label is misapplied to the
+  diverged fine-tune. See [[vq1-run-notes]].
+- **Entry point:** `run_vq1.py` USED to auto-prefer this; as of commit
+  `fe16627` it now loads `aigp_distill_final.zip` directly instead.
