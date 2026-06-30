@@ -142,6 +142,7 @@ _latest_telemetry = {
     "velocity":          (0.0, 0.0, 0.0),   # body angular rates rad/s — from ATTITUDE/HIGHRES_IMU
     "position":          (0.0, 0.0, 0.0),   # (x, y, z) m NED         — from LOCAL_POSITION_NED
     "linear_velocity":   (0.0, 0.0, 0.0),   # (vx, vy, vz) m/s NED   — from LOCAL_POSITION_NED
+    "acceleration":      (0.0, 0.0, 0.0),   # (ax, ay, az) m/s^2 FRD body — from HIGHRES_IMU (specific force)
 }
 _race_started: bool = False  # set True by _MAVLinkReceiver once GO fires this session
 _countdown_armed: bool = False  # True once a GENUINE future countdown is observed
@@ -167,6 +168,8 @@ class _MAVLinkReceiver:
         self._running = False
         self._last_race_log = 0.0
         self._last_arm_log = 0.0
+        self._last_imu_log = 0.0
+        self._imu_count = 0
 
     def start(self) -> None:
         self._running = True
@@ -221,6 +224,24 @@ class _MAVLinkReceiver:
                 with _telem_lock:
                     _latest_telemetry["velocity"] = (
                         float(msg.xgyro), float(msg.ygyro), float(msg.zgyro)
+                    )
+                    _latest_telemetry["acceleration"] = (
+                        float(msg.xacc), float(msg.yacc), float(msg.zacc)
+                    )
+                # Throttled IMU diagnostic (~1 Hz): confirms accel capture, the
+                # FRD sign convention (zacc ~ -9.81 at rest, level), and stream rate.
+                self._imu_count += 1
+                now = time.time()
+                if now - self._last_imu_log >= 1.0:
+                    hz = (self._imu_count / (now - self._last_imu_log)
+                          if self._last_imu_log else float(self._imu_count))
+                    self._last_imu_log = now
+                    self._imu_count = 0
+                    logger.info(
+                        "[IMU] ~%.0f Hz  accel(FRD m/s2)=[%+.3f %+.3f %+.3f]  "
+                        "gyro(rad/s)=[%+.3f %+.3f %+.3f]",
+                        hz, float(msg.xacc), float(msg.yacc), float(msg.zacc),
+                        float(msg.xgyro), float(msg.ygyro), float(msg.zgyro),
                     )
             elif msg_type == "LOCAL_POSITION_NED":
                 with _telem_lock:
