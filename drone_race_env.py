@@ -28,7 +28,8 @@ from config import (
     MOTOR_TAU,
     OBS_NOISE_POS, OBS_NOISE_VEL, OBS_NOISE_RPY, OBS_NOISE_ANGVEL,
     OBS_NOISE_GATE_POS, OBS_NOISE_GATE_YAW, OBS_DELAY_STEPS,
-    FPV_RESOLUTION, FPV_FOV, FPV_TILT_DEG, FPV_FRAME_STACK, VISION_STATE_DIM,
+    FPV_RESOLUTION, FPV_FOV, FPV_RENDER_W, FPV_RENDER_H, FPV_TILT_DEG,
+    FPV_FRAME_STACK, VISION_STATE_DIM,
     VIO_GYRO_BIAS_INSTABILITY, VIO_GYRO_WHITE_NOISE,
     VIO_ACCEL_BIAS, VIO_ACCEL_NOISE,
     VIO_VEL_DRIFT_RATE, VIO_POS_DRIFT_RATE, VIO_UPDATE_RATE,
@@ -772,26 +773,30 @@ class DroneRaceEnv(gym.Env):
             self._vio._difficulty = self._difficulty
 
     def _render_fpv(self):
-        """Render FPV image, optionally with motion blur.
+        """Render the FPV image at the camera's true 16:9 aspect, then squash to
+        the square policy input, optionally with motion blur.
 
-        Motion blur (from event-sharp-nerf-drones, Zou et al. 2026):
-        Averages N sub-exposure renders by interpolating drone pose between
-        previous and current timestep. Simulates real camera integration
-        during high-speed flight where shutter speed causes blur.
+        Intrinsics are HFoV=90°, VFoV=58.72° (16:9). MuJoCo derives HFoV from
+        fovy (=FPV_FOV, vertical) and the render-buffer aspect, so we MUST render
+        at 16:9 (FPV_RENDER_W x FPV_RENDER_H) then resize to FPV_RESOLUTION^2 —
+        exactly as deploy squashes 640x360 -> 48x48 (dcl_adapter, PIL BILINEAR).
+        Rendering square would give HFoV=VFoV and distort what the policy sees.
+
+        Motion blur (event-sharp-nerf-drones, Zou et al. 2026): averages N
+        sub-exposure renders by interpolating drone pose between timesteps.
         """
         if self._renderer is None:
-            self._renderer = mujoco.Renderer(self._model, FPV_RESOLUTION, FPV_RESOLUTION)
+            self._renderer = mujoco.Renderer(self._model, FPV_RENDER_H, FPV_RENDER_W)
 
         if (not self._motion_blur_enabled
                 or self._motion_blur_samples <= 1
                 or self._prev_qpos is None):
-            # No blur: single render
             self._renderer.update_scene(self._data, camera=self._fpv_cam_id)
-            return self._renderer.render()
+            return self._resize_fpv(self._renderer.render())
 
         # Motion blur: average N sub-exposure renders
         current_qpos = self._data.qpos[:7].copy()
-        accum = np.zeros((FPV_RESOLUTION, FPV_RESOLUTION, 3), dtype=np.float32)
+        accum = np.zeros((FPV_RENDER_H, FPV_RENDER_W, 3), dtype=np.float32)
 
         for i in range(self._motion_blur_samples):
             alpha = i / (self._motion_blur_samples - 1)  # 0.0 to 1.0
@@ -810,7 +815,18 @@ class DroneRaceEnv(gym.Env):
         self._data.qpos[:7] = current_qpos
         mujoco.mj_forward(self._model, self._data)
 
-        return (accum / self._motion_blur_samples).astype(np.uint8)
+        return self._resize_fpv((accum / self._motion_blur_samples).astype(np.uint8))
+
+    @staticmethod
+    def _resize_fpv(frame_hwc):
+        """Squash the 16:9 render to the square policy input (FPV_RESOLUTION^2),
+        matching deploy's PIL BILINEAR resize in dcl_adapter.py."""
+        if frame_hwc.shape[:2] == (FPV_RESOLUTION, FPV_RESOLUTION):
+            return frame_hwc
+        from PIL import Image
+        img = Image.fromarray(frame_hwc).resize(
+            (FPV_RESOLUTION, FPV_RESOLUTION), Image.BILINEAR)
+        return np.asarray(img, dtype=np.uint8)
 
     @staticmethod
     def _slerp(q0, q1, t):

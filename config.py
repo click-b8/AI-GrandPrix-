@@ -80,7 +80,10 @@ OBS_DELAY_STEPS = (0, 2)          # observation pipeline latency (camera + proce
 
 # --- FPV Camera (vision-based racing) ---
 FPV_RESOLUTION = 48           # 48x48 pixels (smaller = faster rendering + CNN)
-FPV_FOV = 90                  # degrees, typical racing camera FOV
+FPV_FOV = 58.72               # VERTICAL FoV (deg), from Elodin practice-rig intrinsics (NOT the stated 90). With a 16:9 render buffer MuJoCo derives HFoV≈90° from this fovy.
+FPV_ASPECT = 16.0 / 9.0       # camera aspect: HFoV=90 with VFoV=58.72; deploy squashes 640x360 RGB -> 48x48
+FPV_RENDER_W = 96             # 16:9 offscreen render width (96/54 = 16/9); resized down to FPV_RESOLUTION square
+FPV_RENDER_H = 54             # 16:9 offscreen render height
 FPV_TILT_DEG = 20             # VADR-TS-002 §3.8: camera tilted upwards 20°
 FPV_FRAME_STACK = 3           # stacked frames -> image (9,48,48); N=3 adds an acceleration cue (not just velocity) for gate timing, and matches the contract-test oracle
 VISION_STATE_DIM = 19         # 6D rotation(6) + vio_velocity(3) + vio_angular_rates(3) + prev_action(4) + vio_position(3)

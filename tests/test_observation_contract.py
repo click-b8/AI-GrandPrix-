@@ -129,6 +129,24 @@ def test_frame_stack_order_and_reversed_negative_control():
         "reversed stack equals correct — frames not distinguishable enough"
 
 
+def test_camera_fov_follows_intrinsics_not_stated_90():
+    """Camera must follow the Elodin intrinsics (VFoV≈58.72°, HFoV≈90°, 16:9),
+    NOT the stated 90° VFoV on a square render. Pins config against regression."""
+    from config import (FPV_FOV, FPV_ASPECT, FPV_RENDER_W, FPV_RENDER_H,
+                        FPV_RESOLUTION)
+    # Vertical FoV is the intrinsics value, not the stated 90.
+    assert abs(FPV_FOV - 58.72) < 0.1, "FPV_FOV must be the ~58.72° vertical FoV"
+    assert FPV_FOV < 90.0
+    # Render buffer is 16:9 so MuJoCo derives HFoV from fovy + aspect.
+    np.testing.assert_allclose(FPV_RENDER_W / FPV_RENDER_H, 16.0 / 9.0, rtol=1e-3)
+    np.testing.assert_allclose(FPV_ASPECT, 16.0 / 9.0, rtol=1e-3)
+    # Horizontal FoV implied at 16:9 must be ~90°.
+    hfov = 2.0 * np.degrees(np.arctan(np.tan(np.radians(FPV_FOV) / 2.0) * FPV_ASPECT))
+    np.testing.assert_allclose(hfov, 90.0, atol=0.5)
+    # Final policy image is a square 48x48 (16:9 squashed), matching deploy.
+    assert FPV_RESOLUTION == 48
+
+
 # ---------------------------------------------------------------------------
 # Layer 2 — cross-builder equality (skip until 10-D builders exist)
 # ---------------------------------------------------------------------------
