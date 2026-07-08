@@ -86,7 +86,7 @@ FPV_RENDER_W = 96             # 16:9 offscreen render width (96/54 = 16/9); resi
 FPV_RENDER_H = 54             # 16:9 offscreen render height
 FPV_TILT_DEG = 20             # VADR-TS-002 §3.8: camera tilted upwards 20°
 FPV_FRAME_STACK = 3           # stacked frames -> image (9,48,48); N=3 adds an acceleration cue (not just velocity) for gate timing, and matches the contract-test oracle
-VISION_STATE_DIM = 19         # 6D rotation(6) + vio_velocity(3) + vio_angular_rates(3) + prev_action(4) + vio_position(3)
+VISION_STATE_DIM = 10         # gravity_unit(3, FLU) + body_rates(3, FLU) + prev_action(4)  — vision+IMU contract (observation-spec.md)
 
 # --- Motion blur (from event-sharp-nerf-drones, Zou et al. 2026) ---
 # At high speed, FPV frames are motion-blurred. Simulating this forces

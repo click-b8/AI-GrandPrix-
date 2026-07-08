@@ -296,7 +296,7 @@ def main():
 
     print(f'Vision-based training: {TOTAL_TIMESTEPS:,} timesteps')
     print(f'Image: {FPV_RESOLUTION}x{FPV_RESOLUTION}, frame stack: {FPV_FRAME_STACK}')
-    print(f'State: {VISION_STATE_DIM}D (6D rot + VIO vel/angvel + prev action + VIO pos)')
+    print(f'State: {VISION_STATE_DIM}D (gravity_unit(3) + body_rates(3) + prev_action(4))')
     print(f'Feature extractor: CoarseCNN(64D) + FineCNN(128D) + StateMLP(64D) = 256D')
     print(f'Optimizations: coarse-to-fine CNN, 6D rotation, motion blur warmup')
     print(f'Curriculum: medium(0-30%) -> ramp(30-80%) -> full(80-100%)')

@@ -849,26 +849,26 @@ class DroneRaceEnv(gym.Env):
         return (np.sin((1 - t) * theta) / sin_theta) * q0 + (np.sin(t * theta) / sin_theta) * q1
 
     def _get_minimal_state(self):
-        """Build 19D minimal state vector for hybrid vision policy.
+        """Build the 10-D vision+IMU state:
+            gravity_unit(3, FLU) + body_rates(3, FLU) + prev_action(4) = 10-D.
 
-        Uses 6D rotation representation (event-sharp-nerf-drones, Zhou CVPR 2019)
-        which is continuous and avoids gimbal lock, superior for learning.
+        Matches obsidian/observation-spec.md and tests/test_observation_contract.py.
+        Gravity is the clean gravity-down UNIT vector from the true attitude
+        (R.T @ [0,0,-1], FLU); the deploy side recovers the same direction from
+        the IMU via attitude_filter.GravityEstimator. Body rates are the true FLU
+        body angular velocity, matching deploy's raw IMU gyro.
 
-        Layout: rot_6d(6) + vio_velocity(3) + vio_angular_rates(3) +
-                prev_action(4) + vio_position(3) = 19D
+        No gravity/gyro noise is injected yet: that magnitude is set from the
+        MEASURED deploy-filter residual (de-risk flight), not a guess. Inject it
+        here once measured (hook: gravity_unit += noise; renormalize).
         """
         quat_wxyz = self._data.qpos[3:7]
-        R = _quat_to_rotmat(*quat_wxyz)
-        rot_6d = _rotmat_to_6d(R)
-
-        if self._vio is not None:
-            vio_vel, vio_angvel, vio_pos = self._vio.get_estimates()
-            return np.concatenate([rot_6d, vio_vel, vio_angvel, self._prev_action, vio_pos])
-        else:
-            vel = self._data.qvel[0:3].astype(np.float32)
-            ang_vel_body = (R.T @ self._data.qvel[3:6]).astype(np.float32)
-            pos = self._data.qpos[0:3].astype(np.float32)
-            return np.concatenate([rot_6d, vel, ang_vel_body, self._prev_action, pos])
+        R = _quat_to_rotmat(*quat_wxyz)                                   # body->world (z-up)
+        gravity_unit = (R.T @ np.array([0.0, 0.0, -1.0])).astype(np.float32)  # FLU, unit
+        body_rates = (R.T @ self._data.qvel[3:6]).astype(np.float32)         # FLU, rad/s
+        return np.concatenate(
+            [gravity_unit, body_rates, self._prev_action]
+        ).astype(np.float32)
 
     def _get_vision_obs(self):
         """Build Dict observation for vision mode: stacked FPV+event images + minimal state.
