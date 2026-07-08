@@ -82,7 +82,7 @@ OBS_DELAY_STEPS = (0, 2)          # observation pipeline latency (camera + proce
 FPV_RESOLUTION = 48           # 48x48 pixels (smaller = faster rendering + CNN)
 FPV_FOV = 90                  # degrees, typical racing camera FOV
 FPV_TILT_DEG = 20             # VADR-TS-002 §3.8: camera tilted upwards 20°
-FPV_FRAME_STACK = 2           # number of stacked frames (2 = enough temporal info, 3.5x less CNN data)
+FPV_FRAME_STACK = 3           # stacked frames -> image (9,48,48); N=3 adds an acceleration cue (not just velocity) for gate timing, and matches the contract-test oracle
 VISION_STATE_DIM = 19         # 6D rotation(6) + vio_velocity(3) + vio_angular_rates(3) + prev_action(4) + vio_position(3)
 
 # --- Motion blur (from event-sharp-nerf-drones, Zou et al. 2026) ---
