@@ -8,12 +8,14 @@ version compatibility issues with SB3.
 
 import logging
 import time
+from collections import deque
 
 import numpy as np
 import torch
 import torch.nn as nn
 from gymnasium import spaces
 from vision_model import DroneVisionExtractor
+from config import FPV_FRAME_STACK, GRAVITY
 
 _log = logging.getLogger(__name__)
 
@@ -161,12 +163,17 @@ class SCUBALabAdapter:
         # Building the model with the wrong channel count causes strict=True to fail.
         first_weight = checkpoint.get('features_extractor.coarse_cnn.0.weight')
         n_channels = int(first_weight.shape[1]) if first_weight is not None else 14
-        print(f"[SCUBA Lab] Checkpoint input channels: {n_channels} "
-              f"({'finetune/RGB-only' if n_channels == 6 else 'distill/event-cam'})")
+        expected_ch = 3 * FPV_FRAME_STACK   # 9 for N=3: RGB-only 10-D vision policy
+        print(f"[SCUBA Lab] Checkpoint input channels: {n_channels} (expected {expected_ch})")
+        assert n_channels == expected_ch, (
+            f"10-D vision policy expects {expected_ch} image channels "
+            f"(3 RGB x {FPV_FRAME_STACK} frames); checkpoint has {n_channels}. "
+            f"Point CANONICAL_MODEL_PATH at a 10-D/{expected_ch}-ch checkpoint."
+        )
 
         obs_space = spaces.Dict({
             "image": spaces.Box(low=0, high=255, shape=(n_channels, 48, 48), dtype=np.uint8),
-            "state": spaces.Box(low=-np.inf, high=np.inf, shape=(19,), dtype=np.float32),
+            "state": spaces.Box(low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32),
         })
         self.n_channels = n_channels
         self.feature_extractor = DroneVisionExtractor(obs_space).to(self.device)
@@ -176,6 +183,7 @@ class SCUBALabAdapter:
         print(f"[SCUBA Lab] [OK] Feature extractor + policy head loaded (strict=True)")
         self._last_state_log = 0.0
         self._prev_action = np.zeros(4, dtype=np.float32)  # [throttle, roll, pitch, yaw]
+        self._frame_deque = deque(maxlen=FPV_FRAME_STACK)  # real oldest->newest frame stack
 
     def _load_weights(self, checkpoint: dict):
         """Load weights from a pre-loaded checkpoint dict with strict=True.
@@ -241,127 +249,81 @@ class SCUBALabAdapter:
         print(f"  policy.mlp_extractor.policy_net.2      : {stats(self.policy.mlp_extractor['policy_net'][2].weight)}")
         print(f"  policy.action_net.weight               : {stats(self.policy.action_net.weight)}")
 
+    def reset_observation(self):
+        """Clear per-race observation state (frame deque + prev_action). Called on
+        the GO edge. This is the ONLY method that empties _frame_deque — the
+        _stack_frames() warmup contract (fill-on-empty) depends on that."""
+        self._frame_deque.clear()
+        self._prev_action = np.zeros(4, dtype=np.float32)
+
+    @staticmethod
+    def _build_state_10d(gravity_frd, gyro_frd, prev_action):
+        """Pure 10-D state builder (no model/torch), matching drone_race_env
+        _get_minimal_state: gravity_unit(3, FLU) + body_rates(3, FLU) + prev_action(4).
+        gravity_frd (norm~=g) and gyro_frd are FRD; mapped to FLU via C=_NED_TO_TRAIN."""
+        g = np.asarray(gravity_frd, dtype=np.float32)
+        g_unit_flu = _NED_TO_TRAIN @ (g / (np.linalg.norm(g) + 1e-9))        # FRD->FLU, unit
+        body_rates = _NED_TO_TRAIN @ np.asarray(gyro_frd, dtype=np.float32)  # FRD->FLU
+        return np.concatenate(
+            [g_unit_flu, body_rates, np.asarray(prev_action, dtype=np.float32)]
+        ).astype(np.float32)
+
+    def _stack_frames(self, rgb_hwc):
+        """Append a 48x48x3 frame; stack oldest->newest along channels -> (9,48,48)
+        CHW. Warmup fills the deque with the first frame (matches env reset). The
+        deque is empty only at construction and after reset_observation()."""
+        if not self._frame_deque:                       # empty only at init / after reset
+            for _ in range(self._frame_deque.maxlen):
+                self._frame_deque.append(rgb_hwc.copy())
+        else:
+            self._frame_deque.append(rgb_hwc.copy())
+        stacked_hwc = np.concatenate(list(self._frame_deque), axis=2)   # (48,48,9)
+        return np.transpose(stacked_hwc, (2, 0, 1)).astype(np.uint8)    # (9,48,48)
+
     def process_observation(self, telemetry: dict, visual_data: np.ndarray) -> tuple:
-        """
-        Convert DCL inputs to model observation format
+        """Convert DCL inputs to the 10-D vision+IMU observation.
 
-        Args:
-            telemetry: Dict with keys: position, velocity, orientation
-            visual_data: Visual stream from FPV camera (H, W, C)
-
-        Returns:
-            Tuple of (features_tensor, state_tensor) ready for policy
+        image: last FPV_FRAME_STACK RGB frames, 48x48, stacked oldest->newest
+               along channels -> (3*N, 48, 48) CHW uint8 (matches the env).
+        state: gravity_unit(3, FLU) + body_rates(3, FLU) + prev_action(4) = 10-D.
+               gravity from the A2 GravityEstimator (run in the run_vq1 RX loop,
+               published as telemetry['gravity_frd'], FRD); body rates from
+               HIGHRES_IMU gyro (telemetry['velocity'], FRD). Both FRD->FLU via C.
         """
-        # Resize to model input size (48x48) if needed
+        # Resize to 48x48 RGB if needed, then build the oldest->newest frame stack.
         if visual_data.shape[:2] != (48, 48):
             from PIL import Image
-            pil_img = Image.fromarray(visual_data)
-            pil_img = pil_img.resize((48, 48), Image.BILINEAR)
-            visual_data = np.array(pil_img)
+            visual_data = np.array(
+                Image.fromarray(visual_data).resize((48, 48), Image.BILINEAR)
+            )
+        rgb_hwc = visual_data[..., :3].astype(np.uint8)          # (48,48,3)
+        image_input = self._stack_frames(rgb_hwc)                # (9,48,48) CHW uint8
 
-        # Convert to (C, H, W) for PyTorch if needed
-        if visual_data.shape[-1] == 3:  # (H, W, C) -> (C, H, W)
-            image = np.transpose(visual_data, (2, 0, 1))
-        else:
-            image = visual_data
-
-        # Build image input for model.
-        #
-        # Distill model (aigp_distill_final): EVENT_CAMERA_ENABLED=True
-        #   n_channels=14 — 2 stacked frames × (3 RGB + 4 event channels)
-        #   Zero-pad event channels at inference since DCL provides RGB only.
-        #
-        # Fine-tuned model (aigp_finetune_tilt_final): EVENT_CAMERA_ENABLED=False
-        #   n_channels=6 — 2 stacked frames × 3 RGB channels only.
-        rgb_frame = image.astype(np.float32)  # (3, 48, 48)
-
-        if self.n_channels == 14:
-            event_channels = np.zeros((4, 48, 48), dtype=np.float32)
-            frame_with_events = np.concatenate([rgb_frame, event_channels], axis=0)  # 7ch
-            image_input = np.concatenate([frame_with_events, frame_with_events], axis=0)  # 14ch
-        elif self.n_channels == 6:
-            image_input = np.concatenate([rgb_frame, rgb_frame], axis=0)  # 6ch
-        else:
-            import warnings
-            warnings.warn(f"Unexpected CNN in_channels={self.n_channels}; defaulting to RGB stack")
-            image_input = np.concatenate([rgb_frame, rgb_frame], axis=0)
-
-        image_input = image_input.astype(np.uint8)
-
-        # Build 19D state matching _get_minimal_state() in drone_race_env.py.
-        # Layout: rot_6d(6) + lin_vel(3) + ang_rates(3) + prev_action(4) + position(3)
-        # See obsidian/state-vector-fix.md for the full dim-by-dim spec.
-
-        # d0-5: 6D rotation. Build body→NED R from ZYX Euler, then re-express it
-        # in the training (z-up / FLU) frame before extracting the first two cols.
-        # Without this transform the vertical sense of the attitude is inverted
-        # vs training (z-down NED) — the model perceives nose-up as forward-down,
-        # which drove the full-thrust tumble. See _ned_to_train_rotmat above and
-        # obsidian/state-vector-fix.md §z-axis inversion.
-        rpy = np.array(telemetry.get('orientation', [0.0, 0.0, 0.0]), dtype=np.float32)
-        R_ned = _euler_to_rotmat(float(rpy[0]), float(rpy[1]), float(rpy[2]))
-        R = _ned_to_train_rotmat(R_ned)
-        rot_6d = _rotmat_to_6d(R)                                          # (6,)
-
-        # d6-8: linear velocity (m/s) from LOCAL_POSITION_NED. NED is z-down;
-        # training is z-up, so negate the vertical component (vz). Horizontal
-        # (vx, vy) left as-is — see open item on horizontal-frame alignment.
-        lin_vel = np.array(
-            telemetry.get('linear_velocity', [0.0, 0.0, 0.0]), dtype=np.float32
-        )                                                                   # (3,)
-        lin_vel[2] = -lin_vel[2]                                            # NED down -> z-up
-
-        # d9-11: body angular rates (rad/s) from ATTITUDE.rollspeed/pitchspeed/yawspeed
-        #        (or HIGHRES_IMU gyro if that message arrived most recently).
-        # NED reports rates in the FRD aircraft body frame; training expects them
-        # in the FLU body frame. FRD->FLU is the SAME Rx(180) = C = diag(1,-1,-1)
-        # as the vertical fix, applied as a single-sided product to the vector:
-        # ang_rates_train = C @ ang_rates_ned (roll kept, pitch & yaw negated).
-        # Angular velocity is a pseudovector but C is a proper rotation (det +1),
-        # so it transforms like an ordinary vector. Cross-checked against the
-        # training env's R.T @ qvel[3:6] in the test suite.
-        ang_rates = np.array(
-            telemetry.get('velocity', [0.0, 0.0, 0.0]), dtype=np.float32
-        )                                                                   # (3,)
-        ang_rates = (_NED_TO_TRAIN @ ang_rates).astype(np.float32)         # FRD body -> FLU body
-
-        # d12-15: previous action (throttle, roll, pitch, yaw) normalized
-        #         initialised to zeros; updated by predict_action() each step
-        prev_action = self._prev_action.copy()                             # (4,)
-
-        # d16-18: position (m) from LOCAL_POSITION_NED. NED is z-down; training is
-        # z-up, so negate the vertical component (z). Horizontal (x, y) left as-is.
-        position = np.array(
-            telemetry.get('position', [0.0, 0.0, 0.0]), dtype=np.float32
-        )                                                                   # (3,)
-        position[2] = -position[2]                                         # NED down -> z-up
-
-        state = np.concatenate([rot_6d, lin_vel, ang_rates, prev_action, position])
-        # assert state.shape == (19,)  — always true by construction above
+        # Build the 10-D state: gravity_unit(3, FLU) + body_rates(3, FLU) + prev_action(4).
+        # gravity_frd comes from the A2 GravityEstimator (run_vq1 RX loop); the old
+        # rot_6d/lin_vel/position dims are gone — the sim blocks ATTITUDE/
+        # LOCAL_POSITION_NED, so those telemetry sources no longer exist.
+        state = self._build_state_10d(
+            telemetry.get("gravity_frd", (0.0, 0.0, GRAVITY)),
+            telemetry.get("velocity", (0.0, 0.0, 0.0)),
+            self._prev_action,
+        )
 
         now = time.time()
         if now - self._last_state_log >= 1.0:
             self._last_state_log = now
             _log.info(
-                "[State 19D fed to model]\n"
-                "  d0-2   rot_6d col0 (body-x, z-up frame) = [%+.3f %+.3f %+.3f]\n"
-                "  d3-5   rot_6d col1 (body-y, z-up frame) = [%+.3f %+.3f %+.3f]\n"
-                "  d6-8   lin_vel z-up (vx,vy,-vz m/s)     = [%+.3f %+.3f %+.3f]\n"
-                "  d9-11  ang_rates FLU body (rad/s)        = [%+.3f %+.3f %+.3f]\n"
-                "  d12-15 prev_action [thr,r,p,y]          = [%+.3f %+.3f %+.3f %+.3f]\n"
-                "  d16-18 position z-up (x,y,-z m)         = [%+.3f %+.3f %+.3f]",
+                "[State 10D fed to model]\n"
+                "  d0-2  gravity_unit FLU  = [%+.3f %+.3f %+.3f]\n"
+                "  d3-5  body_rates FLU    = [%+.3f %+.3f %+.3f]\n"
+                "  d6-9  prev_action       = [%+.3f %+.3f %+.3f %+.3f]",
                 state[0], state[1], state[2],
                 state[3], state[4], state[5],
-                state[6], state[7], state[8],
-                state[9], state[10], state[11],
-                state[12], state[13], state[14], state[15],
-                state[16], state[17], state[18],
+                state[6], state[7], state[8], state[9],
             )
 
-        # Convert to tensors
-        image_tensor = torch.from_numpy(image_input).float().unsqueeze(0).to(self.device)  # (1, n_channels, 48, 48)
-        state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(self.device)  # (1, 19)
-
+        image_tensor = torch.from_numpy(image_input).float().unsqueeze(0).to(self.device)  # (1,9,48,48)
+        state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(self.device)        # (1,10)
         return image_tensor, state_tensor
 
     def predict_action(self, image_tensor: torch.Tensor, state_tensor: torch.Tensor) -> np.ndarray:
@@ -370,7 +332,7 @@ class SCUBALabAdapter:
 
         Args:
             image_tensor: Processed image tensor (1, n_channels, 48, 48)
-            state_tensor: Processed state tensor (1, 19)
+            state_tensor: Processed state tensor (1, 10)
 
         Returns:
             Action array: [throttle, roll, pitch, yaw]
@@ -392,7 +354,7 @@ class SCUBALabAdapter:
         action[0] = np.clip(action[0], 0.0, 1.0)  # throttle
         action[1:] = np.clip(action[1:], -1.0, 1.0)  # roll, pitch, yaw
 
-        # Store for next step's prev_action dim (d12-15 of the 19D state).
+        # Store for next step's prev_action dim (d6-9 of the 10D state).
         self._prev_action = action.copy()
 
         return action
