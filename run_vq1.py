@@ -44,12 +44,14 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
 from typing import Optional
 
 import numpy as np
 from PIL import Image
 from pymavlink import mavutil
 
+from attitude_filter import GravityEstimator, GRAVITY
 from dcl_vision_receiver import DCLVisionReceiver
 from trajectory_logger import TrajectoryLogger
 
@@ -143,6 +145,7 @@ _latest_telemetry = {
     "position":          (0.0, 0.0, 0.0),   # (x, y, z) m NED         — from LOCAL_POSITION_NED
     "linear_velocity":   (0.0, 0.0, 0.0),   # (vx, vy, vz) m/s NED   — from LOCAL_POSITION_NED
     "acceleration":      (0.0, 0.0, 0.0),   # (ax, ay, az) m/s^2 FRD body — from HIGHRES_IMU (specific force)
+    "gravity_frd":       (0.0, 0.0, GRAVITY),  # gravity-down FRD (norm~=g) from A2 GravityEstimator
 }
 _race_started: bool = False  # set True by _MAVLinkReceiver once GO fires this session
 _countdown_armed: bool = False  # True once a GENUINE future countdown is observed
@@ -170,6 +173,30 @@ class _MAVLinkReceiver:
         self._last_arm_log = 0.0
         self._last_imu_log = 0.0
         self._imu_count = 0
+        self._grav_est = GravityEstimator()          # A2 filter, updated per IMU sample
+        self._last_imu_usec = None                   # for dt from message time, not wall-clock
+        self._accel_window = deque(maxlen=10)        # rolling accel for a denoised GO seed
+        self._dt_warned = False
+
+    def _imu_dt(self, time_usec):
+        """dt from HIGHRES_IMU.time_usec deltas (sim time), NOT wall-clock arrival.
+        UDP jitter must not corrupt gyro integration. Nominal 1/115 fallback + warn."""
+        nominal = 1.0 / 115.0
+        if time_usec is None:
+            self._warn_dt("HIGHRES_IMU.time_usec missing"); return nominal
+        if self._last_imu_usec is None:
+            self._last_imu_usec = time_usec; return nominal          # first sample
+        delta = time_usec - self._last_imu_usec
+        self._last_imu_usec = time_usec
+        if delta <= 0 or delta > 1_000_000:                          # non-monotonic / >1s gap
+            self._warn_dt(f"bad time_usec delta={delta}us"); return nominal
+        return delta / 1e6
+
+    def _warn_dt(self, why):
+        if not self._dt_warned:
+            self._dt_warned = True
+            logger.warning("[GravityFilter] dt fallback to 1/115 nominal (%s); "
+                           "gyro integration may drift. This warns once.", why)
 
     def start(self) -> None:
         self._running = True
@@ -221,12 +248,20 @@ class _MAVLinkReceiver:
                         float(msg.rollspeed), float(msg.pitchspeed), float(msg.yawspeed)
                     )
             elif msg_type == "HIGHRES_IMU":
+                accel = np.array([msg.xacc, msg.yacc, msg.zacc], dtype=float)    # FRD
+                gyro = np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=float)  # FRD
+                dt = self._imu_dt(getattr(msg, "time_usec", None))
+                g_frd = self._grav_est.update(accel, gyro, dt)                   # gravity-down FRD
+                self._accel_window.append(accel)
                 with _telem_lock:
                     _latest_telemetry["velocity"] = (
                         float(msg.xgyro), float(msg.ygyro), float(msg.zgyro)
                     )
                     _latest_telemetry["acceleration"] = (
                         float(msg.xacc), float(msg.yacc), float(msg.zacc)
+                    )
+                    _latest_telemetry["gravity_frd"] = (
+                        float(g_frd[0]), float(g_frd[1]), float(g_frd[2])
                     )
                 # Throttled IMU diagnostic (~1 Hz): confirms accel capture, the
                 # FRD sign convention (zacc ~ -9.81 at rest, level), and stream rate.
@@ -289,6 +324,16 @@ class _MAVLinkReceiver:
                             if (_countdown_armed and not _race_started
                                     and sim_boot_ms >= _armed_race_start_ms + START_MARGIN_MS):
                                 _race_started = True
+                                # Seed the gravity filter at GO from a short rolling
+                                # mean of accel (denoised vs a single sample) when it is
+                                # within the 1g gate; otherwise KEEP the filter's current
+                                # estimate (converged since receiver start) — a better
+                                # fallback than a level reset. Always reset dt tracking.
+                                if self._accel_window:
+                                    a_mean = np.mean(np.stack(self._accel_window), axis=0)
+                                    if 0.85 * GRAVITY <= float(np.linalg.norm(a_mean)) <= 1.15 * GRAVITY:
+                                        self._grav_est.reset(gravity_frd=-a_mean)
+                                self._last_imu_usec = None
                                 logger.info(
                                     "[Race] GO — sim_boot=%d >= armed race_start=%d + margin=%d "
                                     "(actual margin used = %d ms), model output unblocked",
@@ -346,6 +391,7 @@ async def run(
     log_trajectory: bool = False,
     control_mode: str = "attitude",
     device: str = None,
+    hover_probe: float = None,
 ):
     global _vision_receiver, _mavlink_rx, _timesync, _trajectory_logger
 
@@ -353,6 +399,15 @@ async def run(
 
     _check_model_path(CANONICAL_MODEL_PATH)
     logger.info("Model path verified: %s", CANONICAL_MODEL_PATH)
+
+    if hover_probe is not None:
+        logger.warning(
+            "[HOVER PROBE] DIAGNOSTIC MODE — model loaded but IGNORED. After GO, "
+            "commanding fixed thrust=%.3f with zero body rates for ~%.1fs, logging vz. "
+            "Read the per-frame [HOVER PROBE] vz and the DONE verdict. Run separate "
+            "races at several thrust values to bracket the hover point. NOT for submission.",
+            hover_probe, 2.0,
+        )
 
     sim_conn = None
     if not _allow_stub_vision:
@@ -406,6 +461,7 @@ async def run(
         control_mode=control_mode,
         race_started_source=lambda: _race_started,
         device=device,
+        hover_probe=hover_probe,
     )
 
     if log_trajectory:
@@ -495,7 +551,20 @@ if __name__ == "__main__":
         choices=["cuda", "mps", "cpu"],
         help="Inference device (default: auto-select cuda > mps > cpu).",
     )
+    parser.add_argument(
+        "--hover-probe",
+        type=float,
+        default=None,
+        metavar="THRUST",
+        help="DIAGNOSTIC — ignore the model and command a FIXED thrust THRUST in "
+             "[0,1] with zero body rates for ~2s after GO, logging vz from "
+             "LOCAL_POSITION_NED each frame. Run separate races at e.g. 0.15/0.20/"
+             "0.25/0.30/0.35; the thrust where vz~=0 is DCL's hover fraction. "
+             "NOT for submission.",
+    )
     args = parser.parse_args()
+    if args.hover_probe is not None and not (0.0 <= args.hover_probe <= 1.0):
+        parser.error("--hover-probe THRUST must be in [0, 1]")
 
     # Assign explicitly via globals() so this line remains a module-level
     # update even if a future refactor wraps the __main__ block in a
@@ -506,4 +575,5 @@ if __name__ == "__main__":
     globals()['_allow_stub_vision'] = args.allow_stub_vision
 
     asyncio.run(run(args.host, args.port, args.hz, args.vision_port,
-                    args.log_trajectory, args.control_mode, args.device))
+                    args.log_trajectory, args.control_mode, args.device,
+                    args.hover_probe))

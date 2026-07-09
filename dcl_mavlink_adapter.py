@@ -48,6 +48,12 @@ from dcl_adapter import SCUBALabAdapter
 # Body-rate scale: must match training config.py MAX_BODY_RATE
 MAX_BODY_RATE = 12.0  # rad/s
 
+# --hover-probe diagnostic: after GO, hold a fixed thrust with zero body rates
+# for this long while logging vz, then cut thrust to 0. Used to bracket DCL's
+# hover-thrust fraction across separate races (vz ~= 0 => that thrust hovers).
+HOVER_PROBE_DURATION_S = 2.0
+HOVER_PROBE_HOVER_EPS = 0.1   # |climb rate| below this (m/s) reads as hover
+
 # type_mask = 128 = 0b10000000
 # bit 7 (0x80): IGNORE_ATTITUDE = 1  -> ignore quaternion
 # bits 0-6: all 0 -> use body rates + thrust
@@ -253,6 +259,7 @@ class SCUBALabMAVLinkAdapter:
         control_mode: str = "attitude",
         race_started_source=None,
         device: str = None,
+        hover_probe: float = None,
     ):
         """
         Args:
@@ -269,11 +276,24 @@ class SCUBALabMAVLinkAdapter:
                            'actuator' — SET_ACTUATOR_CONTROL_TARGET group 0 at target_hz,
                            matching update_motor_control() from PyAIPilotExample.
             device:        'cuda', 'mps', or 'cpu'.  None = auto-select in SCUBALabAdapter.
+            hover_probe:   Diagnostic. When set (a thrust in [0,1]), the model is
+                           IGNORED: after GO the adapter commands this fixed thrust
+                           with zero body rates for HOVER_PROBE_DURATION_S, logging
+                           vz each frame, then cuts thrust. None = normal operation.
         """
         if control_mode not in ("attitude", "rates", "actuator"):
             raise ValueError(f"control_mode must be 'attitude', 'rates', or 'actuator'; got {control_mode!r}")
         self.control_mode = control_mode
         self._race_started_source = race_started_source if race_started_source is not None else (lambda: True)
+        self._race_started_prev = False   # for GO-edge detection (reset obs on False->True)
+
+        # --hover-probe diagnostic state (None = disabled; model runs normally).
+        self.hover_probe = hover_probe
+        self._probe_start_time = None
+        self._probe_summary_logged = False
+        self._probe_vz_sum = 0.0
+        self._probe_vz_n = 0
+        self._probe_z0 = None
         self.udp_host = udp_host
         self.udp_port = udp_port
         self.target_hz = target_hz
@@ -340,6 +360,60 @@ class SCUBALabMAVLinkAdapter:
             )
             return False
 
+    def _hover_probe_command(self) -> Dict:
+        """Diagnostic command source for --hover-probe (model ignored).
+
+        Before GO: zero (the wire-gate also zeros pre-GO, but be explicit).
+        For HOVER_PROBE_DURATION_S after GO: fixed thrust, zero body rates,
+        logging vz each frame. After the window: cut thrust to 0 and log a
+        one-time verdict. vz/z are NED (+down); climb rate = -vz (+up).
+        """
+        zero = {"throttle": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+        if not self._race_started_source():
+            return zero
+
+        now = time.time()
+        if self._probe_start_time is None:
+            self._probe_start_time = now
+            self._probe_z0 = float(self.latest_telemetry["position"][2])
+            logger.info(
+                "[HOVER PROBE] GO — holding thrust=%.3f, zero rates, for %.1fs. "
+                "vz/z are NED (+down); climb = -vz (+up).",
+                self.hover_probe, HOVER_PROBE_DURATION_S,
+            )
+
+        elapsed = now - self._probe_start_time
+        if elapsed <= HOVER_PROBE_DURATION_S:
+            vz = float(self.latest_telemetry["linear_velocity"][2])
+            z = float(self.latest_telemetry["position"][2])
+            self._probe_vz_sum += vz
+            self._probe_vz_n += 1
+            logger.info(
+                "[HOVER PROBE] t=%.3fs thrust=%.3f  vz_ned=%+.4f m/s  "
+                "climb=%+.4f m/s(+up)  z_ned=%+.3f m",
+                elapsed, self.hover_probe, vz, -vz, z,
+            )
+            return {"throttle": float(self.hover_probe), "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+
+        if not self._probe_summary_logged:
+            self._probe_summary_logged = True
+            mean_vz = self._probe_vz_sum / max(self._probe_vz_n, 1)
+            mean_climb = -mean_vz
+            net_climb = -(float(self.latest_telemetry["position"][2]) - (self._probe_z0 or 0.0))
+            if abs(mean_climb) < HOVER_PROBE_HOVER_EPS:
+                verdict = "~= HOVER (vz~0) -- thrust ~= DCL hover fraction"
+            elif mean_climb > 0:
+                verdict = "CLIMBING — thrust ABOVE hover"
+            else:
+                verdict = "SINKING — thrust BELOW hover"
+            logger.info(
+                "[HOVER PROBE] DONE thrust=%.3f over %.1fs (n=%d): mean climb=%+.4f m/s "
+                "(mean vz_ned=%+.4f), net climb=%+.3f m  ->  %s. Thrust now cut to 0.",
+                self.hover_probe, HOVER_PROBE_DURATION_S, self._probe_vz_n,
+                mean_climb, mean_vz, net_climb, verdict,
+            )
+        return zero
+
     def step(self, vision_frame: np.ndarray) -> bytes:
         """Inference: vision + telemetry -> MAVLink control frame (sent + returned).
 
@@ -352,8 +426,22 @@ class SCUBALabMAVLinkAdapter:
         actuator: SET_ACTUATOR_CONTROL_TARGET group 0 (RPYT normed to [-1,1]).
           controls = [roll, pitch, yaw, throttle, 0, 0, 0, 0]
           No MAX_BODY_RATE scaling — actuator controls are already normed.
+
+        When --hover-probe is active the model is ignored and a fixed-thrust
+        command is substituted; everything downstream (gating, encoding, send)
+        is identical, so only what goes on the wire changes.
         """
-        command = self.adapter.step(self.latest_telemetry, vision_frame)
+        # On the GO edge, clear stale per-race observation state (frame deque +
+        # prev_action) so a prior race can't bleed into the first frames.
+        race_now = self._race_started_source()
+        if race_now and not self._race_started_prev:
+            self.adapter.reset_observation()
+        self._race_started_prev = race_now
+
+        if self.hover_probe is not None:
+            command = self._hover_probe_command()
+        else:
+            command = self.adapter.step(self.latest_telemetry, vision_frame)
 
         if self.control_mode == "actuator":
             frame = self.frame_builder.set_actuator_control_target(
