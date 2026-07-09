@@ -184,7 +184,49 @@ def test_deploy_state_equals_env_state_at_tilt():
         call _get_minimal_state().
       - np.testing.assert_allclose(deploy_state, env_state, atol=1e-5).
     """
-    pytest.skip("activate body when A2/A3/B5 are implemented — see docstring")
+    import mujoco
+    from attitude_filter import GravityEstimator, GRAVITY
+    from dcl_adapter import SCUBALabAdapter
+    from drone_race_env import DroneRaceEnv, _quat_to_rotmat
+
+    # Physical state: 30/30 tilt (wxyz quaternion) + a world-frame angular velocity.
+    r, p, yw = np.radians(30.0), np.radians(30.0), 0.0
+    cr, sr = np.cos(r / 2), np.sin(r / 2)
+    cp, sp = np.cos(p / 2), np.sin(p / 2)
+    cy, sy = np.cos(yw / 2), np.sin(yw / 2)
+    quat = np.array([cr * cp * cy + sr * sp * sy, sr * cp * cy - cr * sp * sy,
+                     cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy])
+    R = _quat_to_rotmat(*quat)                       # body(FLU) -> world(z-up)
+    omega_world = np.array([0.2, -0.1, 0.3])         # physical angular velocity, world frame
+    prev_action = np.array([0.3, -0.4, 0.5, -0.6], dtype=np.float32)
+
+    # Env builder (no vision render needed): set qpos quaternion + qvel, read state.
+    try:
+        env = DroneRaceEnv(render_mode=None, domain_rand=False, difficulty=1.0,
+                           vision_mode=False)
+        env.reset()
+    except Exception as e:
+        pytest.skip(f"env unavailable: {e}")
+    try:
+        env._data.qpos[3:7] = quat
+        env._data.qvel[3:6] = omega_world
+        env._prev_action = prev_action.copy()
+        mujoco.mj_forward(env._model, env._data)
+        env_state = np.asarray(env._get_minimal_state(), dtype=np.float32)
+    finally:
+        env.close()
+
+    # Deploy builder: derive the FRD IMU from the SAME physical state via the
+    # sensor model (accel = static specific force; gyro = C @ R.T @ omega_world),
+    # settle the gravity filter, then build the 10-D state independently.
+    accel_frd = -GRAVITY * (C @ (R.T @ np.array([0.0, 0.0, -1.0])))
+    gyro_frd = C @ (R.T @ omega_world)
+    est = GravityEstimator()
+    for _ in range(3000):
+        est.update(accel_frd, np.zeros(3), 1.0 / 115.0)
+    deploy_state = SCUBALabAdapter._build_state_10d(est.gravity, gyro_frd, prev_action)
+
+    np.testing.assert_allclose(deploy_state, env_state, atol=1e-5)
 
 
 @pytest.mark.skipif(not _builders_ready(), reason=_SKIP_REASON)
@@ -192,4 +234,26 @@ def test_deploy_image_stack_matches_oracle_order():
     """Push distinguishable consecutive frames through the deploy image builder
     and assert it equals the oracle stacker (oldest->newest CHW), and that a
     reversed input does NOT match — proving the deque order is correct."""
-    pytest.skip("activate body when A3 frame-stack deque is implemented")
+    from collections import deque
+    from config import FPV_FRAME_STACK
+    from dcl_adapter import SCUBALabAdapter
+
+    frames = _distinguishable_frames(n=FPV_FRAME_STACK)   # oldest -> newest
+
+    # Bare adapter instance (no model load) — _stack_frames only needs the deque.
+    adapter = SCUBALabAdapter.__new__(SCUBALabAdapter)
+    adapter._frame_deque = deque(maxlen=FPV_FRAME_STACK)
+
+    out = None
+    for f in frames:
+        out = adapter._stack_frames(f)
+    oracle = _oracle_stack_chw(frames)
+    assert out.shape == (3 * FPV_FRAME_STACK, 48, 48)
+    np.testing.assert_array_equal(out, oracle)
+
+    # Reversed input must NOT match (deque order matters).
+    adapter._frame_deque.clear()
+    rev = None
+    for f in reversed(frames):
+        rev = adapter._stack_frames(f)
+    assert not np.array_equal(rev, oracle), "reversed stack matched — order not enforced"
