@@ -1,0 +1,94 @@
+{
+  "gates": [
+    {
+      "pos_cm": [
+        52889.58,
+        9840.01,
+        7780.0
+      ],
+      "yaw_deg": -90.0,
+      "tag": "START"
+    },
+    {
+      "pos_cm": [
+        50530.0,
+        9630.0,
+        7270.0
+      ],
+      "yaw_deg": -90.0,
+      "tag": null
+    },
+    {
+      "pos_cm": [
+        47760.0,
+        10000.0,
+        6410.0
+      ],
+      "yaw_deg": -90.0,
+      "tag": null
+    },
+    {
+      "pos_cm": [
+        44070.0,
+        9370.0,
+        5320.0
+      ],
+      "yaw_deg": -90.0,
+      "tag": null
+    },
+    {
+      "pos_cm": [
+        41670.0,
+        9800.0,
+        5241.24
+      ],
+      "yaw_deg": -90.0,
+      "tag": null
+    },
+    {
+      "pos_cm": [
+        39300.0,
+        9440.0,
+        5180.0
+      ],
+      "yaw_deg": -90.0,
+      "tag": "FINISH"
+    }
+  ],
+  "spawn": {
+    "pos_cm": [
+      55220.0,
+      9930.0,
+      7729.0
+    ],
+    "yaw_deg": -180.0
+  },
+  "meta": {
+    "source_map": "FlightSim/Content/levels/MAP_anduril_track01.umap",
+    "extraction_method": "single-pass parse of umap/uexp; each actor transform read from its RootScene SceneComponent (RelativeLocation + RelativeRotation.Yaw); raw UE world space, centimetres, Z-up (X-forward, Y-right); no recentering",
+    "gate_actors": "BP_gate_C_0..5 (ordered G1->G6 by instance suffix, spatially monotonic in X)",
+    "spawn_actor": "BP_StartingGrid_C_0",
+    "trigger": {
+      "component": "PassTriggerMultiShape (BP_gate)",
+      "base_mesh": "SM_trigger_square",
+      "base_bounds_full_cm": [
+        100.0,
+        1.0,
+        100.0
+      ],
+      "origin_centered": true,
+      "scale_note": "trigger scale set at runtime by BP_gate construction script (SetMeshPassTriggerRelativeTransform / ETrackGateTriggerShape); NOT serialized on gate instances or CDO"
+    },
+    "spawn_to_G1_bearing_check": {
+      "vector_m": [
+        -23.3,
+        -0.9,
+        0.51
+      ],
+      "abs_bearing_deg": -177.79,
+      "spawn_yaw_deg": -180.0,
+      "bearing_rel_spawn_deg": 2.21,
+      "faces_gate1": true
+    }
+  }
+}
