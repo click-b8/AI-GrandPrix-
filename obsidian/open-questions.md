@@ -119,6 +119,56 @@ one): put a gate of known height at known range in view and read whether it
 sits above or below center. That fixes the sign unambiguously. Related but
 distinct from the resolved `−10 vs 0` magnitude question below.
 
+**Update (2026-07-11, read-only de-risk sniff).** Captured one real 640×360 sim
+FPV frame (`tools/imu_check.py`). Lead gate clearly visible, horizontally
+centered, sitting SLIGHTLY ABOVE vertical center (~48% down). **Still not
+conclusive for our env's tilt sign** — and here's the newly-understood confound:
+the real drone sits at −17.8° nose-down body pitch at spawn (see the IMU entry
+below and the resting-attitude block in [[observation-spec]]), which shifts the
+gate vertically *on top of* whatever the camera tilt does; the two partially
+cancel. A clean sign check now needs our env spawned at the measured −17.8°
+pitch with matched gate geometry, then compare the vertical gate position to
+this frame. So resolving the spawn-pitch (B5) is a prerequisite to closing this.
+Frame kept for reference. OPEN.
+
+### IMU + telemetry availability / health (de-risk sniff 2026-07-11)
+
+Read-only 25 s MAVLink capture (`udpin:0.0.0.0:14550`, `tools/imu_check.py`) with
+the drone sitting at spawn. Nothing was sent to the sim. Findings vs expectation:
+
+- **Telemetry availability — CONFIRMED (resolves the A3 IMU-only-scope risk).**
+  `ATTITUDE`, `LOCAL_POSITION_NED`, `ODOMETRY` are all ABSENT on the live v3385
+  stream; `HIGHRES_IMU` streams at **114.6 Hz** (expected ~115). The
+  [[observation-spec]] premise — build the obs from `HIGHRES_IMU` + vision +
+  `prev_action` only — holds against the real sim. Full type mix: HIGHRES_IMU
+  114.6, ACTUATOR_OUTPUT_STATUS 92.7, HEARTBEAT 9.9, ENCAPSULATED_DATA 4.0 Hz.
+  (The "40 B ATTITUDE-sized" packets are NOT ATTITUDE — decode shows none.)
+
+- **Rest attitude — value confirmed; A-vs-B NOT yet resolved.** Mean accel
+  `[-2.999, -0.003, -9.340]`, `|a| = 9.810` (pure 1 g), implied pitch **−17.80°**,
+  roll ~0. This INDEPENDENTLY REPRODUCES the A1 resting-attitude reading in
+  [[observation-spec]] to 3 d.p., and answers sub-question (i): the reading is
+  **on the ground at spawn**. It does NOT decide (A) non-level body spawn vs (B)
+  IMU mount offset — those are identical at rest by construction; sub-question
+  (ii) "does the vector stay pure-pitch under maneuvering?" needs the in-motion
+  de-risk FLIGHT, which a read-only rest session cannot provide. `TODO(pitch)`
+  value/sign is pinned (−17.8° nose-down); the mechanism attribution is still open.
+
+- **🔴-if-confirmed — gyro channel unverified.** `xgyro/ygyro/zgyro` were exactly
+  `0.0` across all 2865 HIGHRES_IMU samples. ~0 is expected at rest, but *exactly*
+  zero (no noise) means we cannot confirm the gyro channel is live. Both the A2
+  gravity filter (gyro prediction) and `body_rates` (obs dims 3–5) depend on it —
+  if it's dead, the whole state vector is compromised. MUST confirm nonzero gyro
+  under motion in the de-risk flight before trusting either. Escalate to 🔴 if the
+  flight shows gyro stuck at zero.
+
+- **🟡 — `time_usec` not strictly monotonic as received.** HIGHRES_IMU `time_usec`
+  deltas: mean 8729 µs (→114.6 Hz, correct) but std 10731 µs and monotonic=False
+  (some ≤0 deltas) — occasional out-of-order/duplicate arrival, likely UDP
+  reordering on the shared socket. The A2 filter integrates `ġ = −ω×g` over `dt`
+  from these stamps, so its dt handling must reject nonpositive/outlier deltas
+  rather than integrate them.
+
 ## 🟢 Later-phase
 
 ### What's inference time on target hardware?
