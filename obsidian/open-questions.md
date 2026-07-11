@@ -99,6 +99,26 @@ regardless. But if it's worse than we think, distilling from a
 stronger teacher (`aigp_racer_final`, 100M state) or for longer
 might be worthwhile before VQ1. Requires the adapter fix first.
 
+### Is the sign of `FPV_TILT_DEG` correct (camera up vs down)?
+
+`config.py:87` declares `FPV_TILT_DEG = 20` commented "VADR-TS-002 §3.8:
+camera tilted upwards 20°", but the env applies the NEGATIVE at
+`drone_race_env.py:81` (`tilt_rad = np.radians(-FPV_TILT_DEG)`), feeding the
+camera `xyaxes` in the MJCF.
+
+Flagged from the 2026-07-11 course-wiring smoke render: an FPV frame from the
+new spawn put the START gate (≈level, ~0.5 m above the drone, ~23 m ahead) low
+in the frame. That is *consistent with an UP tilt* (optic axis above a level
+target pushes it below center), i.e. possibly correct — but MuJoCo `xyaxes`
+sign conventions are easy to get backwards, and a hand-trace is not proof. Do
+NOT "fix" the sign on the strength of the render alone; an off-by-sign here
+would point the camera 40° away from spec and silently wreck gate detection.
+
+Resolve against ONE real DCL sim frame (the sniff/de-risk session will produce
+one): put a gate of known height at known range in view and read whether it
+sits above or below center. That fixes the sign unambiguously. Related but
+distinct from the resolved `−10 vs 0` magnitude question below.
+
 ## 🟢 Later-phase
 
 ### What's inference time on target hardware?
