@@ -37,7 +37,7 @@ from config import (
     EVENT_CAMERA_ENABLED, EVENT_CONTRAST_THRESHOLD_POS, EVENT_CONTRAST_THRESHOLD_NEG,
     EVENT_CONTRAST_NOISE, EVENT_REFRACTORY_PERIOD, EVENT_FRAME_BINS,
 )
-from track import get_gate_positions, get_gate_yaws, build_gate_xml
+from track import get_gate_positions, get_gate_yaws, build_gate_xml, SPAWN
 
 
 def _quat_to_rpy(w, x, y, z):
@@ -96,7 +96,7 @@ def _build_mjcf(mass, inertia):
       </asset>
 
       <worldbody>
-        <geom type="plane" size="50 50 0.1" material="grid_mat"/>
+        <geom type="plane" size="160 160 0.1" material="grid_mat"/>
         <light directional="true" diffuse="0.9 0.9 0.9" pos="0 0 15" dir="0 0 -1"/>
         <light directional="true" diffuse="0.3 0.3 0.3" pos="15 15 10" dir="-1 -1 -1"/>
 
@@ -492,8 +492,14 @@ class DroneRaceEnv(gym.Env):
 
         mujoco.mj_resetData(self._model, self._data)
 
-        self._data.qpos[0:3] = [0.0, -2.0, 2.5]
-        self._data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+        # Spawn from the real course: position + yaw heading (faces the START
+        # gate ~23 m ahead). Roll/pitch start level.
+        # TODO(pitch): the UE starting-grid actor may sit pitched on the launch
+        # ramp; the export only carries yaw, so pitch is level for now.
+        spawn_yaw = float(SPAWN[3])
+        self._data.qpos[0:3] = SPAWN[:3]
+        self._data.qpos[3:7] = [np.cos(spawn_yaw / 2.0), 0.0, 0.0,
+                                np.sin(spawn_yaw / 2.0)]
         self._data.qvel[:] = 0.0
 
         mujoco.mj_forward(self._model, self._data)
@@ -667,7 +673,7 @@ class DroneRaceEnv(gym.Env):
         elif np.linalg.norm(pos[:2]) > TRACK_BOUNDS:
             reward += REWARD_CRASH_PENALTY
             terminated = True
-        elif pos[2] > 20.0:
+        elif pos[2] > 35.0:  # ceiling — headroom above the ~29 m START altitude
             reward += REWARD_CRASH_PENALTY
             terminated = True
         elif abs(rpy[0]) > 2*np.pi/3 or abs(rpy[1]) > 2*np.pi/3:

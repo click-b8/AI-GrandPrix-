@@ -14,7 +14,7 @@ import numpy as np
 # --- Simulation ---
 SIM_FREQ = 200            # Physics steps per second
 CTRL_FREQ = 100           # Agent control frequency (MonoRace: 500Hz, Swift: 125Hz)
-EPISODE_LENGTH_SEC = 30   # Max episode duration
+EPISODE_LENGTH_SEC = 45   # Max episode duration (Anduril-6 VQ1 course is ~160m long)
 
 # --- Drone physical parameters (A2RL x DCL 2025 spec) ---
 DRONE_MASS = 0.966        # kg (MonoRace competition drone)
@@ -62,7 +62,7 @@ REWARD_TIME_PENALTY = -0.1        # per-step penalty to incentivize speed (no lo
 GATE_WIDTH = 1.5          # meters (MultiGP standard)
 GATE_HEIGHT = 1.5         # meters
 GATE_TOLERANCE = 1.0      # meters — pass radius around gate center
-TRACK_BOUNDS = 40.0       # meters — arena boundary
+TRACK_BOUNDS = 160.0      # meters — arena boundary (sized to the Anduril-6 VQ1 course extent)
 
 # --- Motor dynamics (Swift: real motors have response lag) ---
 MOTOR_TAU = 0.02                  # motor time constant in seconds (~50Hz bandwidth)

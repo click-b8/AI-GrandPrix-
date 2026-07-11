@@ -1,19 +1,21 @@
 """Race track definition — competition-scale FPV racing course.
 
 Gates: 1.5m x 1.5m (MultiGP standard)
-Course: 8 gates with 3D altitude variation in ~50m x 30m arena
+Course: the real Anduril-6 VQ1 export (course_gates_cm.json), 6 gates
+START->FINISH descending ~29m -> ~3m over ~160m, loaded at import (see bottom).
 Each gate has a position and a yaw (facing direction).
 """
+
+import os
 
 import numpy as np
 from config import GATE_WIDTH, GATE_HEIGHT
 
 # Each gate: (x, y, z, yaw_rad). yaw = fly-through heading (yaw=0 -> normal +X).
-# NOTE: PLACEHOLDER course. The real Anduril-6 course arrives as a JSON export
-# (course_gates_cm.json); when it lands it's a one-liner:
-#     RACE_TRACK, SPAWN = load_course_json("course_gates_cm.json")
-# See the UE->MuJoCo conversion + loader at the bottom of this file.
-RACE_TRACK = [
+# DEAD / historical placeholder kept for reference only. The live course is the
+# real Anduril-6 VQ1 export, loaded at import time below (see _COURSE_PATH). This
+# tuple is NOT used anywhere; do not wire it back in as a fallback.
+_PLACEHOLDER_TRACK = [
     (8.0,   0.0,  2.5,  0.0),           # Gate 0: straight ahead
     (14.0,  7.0,  3.5,  np.pi/4),       # Gate 1: climbing right turn
     (10.0, 14.0,  4.5,  np.pi/2),       # Gate 2: high point
@@ -178,7 +180,7 @@ def load_course_json(path, recenter_to_start=True, start_altitude_m=3.0,
 
     Returns (race_track, spawn_env):
       race_track: list of (x, y, z, yaw_rad) -> assign to RACE_TRACK.
-      spawn_env:  np.ndarray (3,) env-frame spawn position, or None.
+      spawn_env:  np.ndarray (4,) env-frame spawn [x, y, z, yaw_rad], or None.
 
     If recenter_to_start, translates so the START gate is at
     (0, 0, start_altitude_m); the SAME translation is applied to the spawn.
@@ -211,6 +213,39 @@ def load_course_json(path, recenter_to_start=True, start_altitude_m=3.0,
     spawn_env = None
     spawn = data.get("spawn")
     if spawn:
-        spawn_env = ue_cm_to_env_m(spawn["pos_cm"]) + translation
+        spawn_pos = ue_cm_to_env_m(spawn["pos_cm"]) + translation
+        # The spawn actor yaw is the drone's LITERAL start heading, not a gate
+        # normal, so normal_offset_deg is NOT applied here -- only the Y-flip
+        # heading negation. (The raw export's own spawn->gate1 bearing check
+        # confirms the unmodified spawn yaw already faces the first gate.)
+        spawn_yaw = ue_yaw_to_env_yaw(spawn["yaw_deg"], normal_offset_deg=0.0)
+        spawn_env = np.array([spawn_pos[0], spawn_pos[1], spawn_pos[2], spawn_yaw])
 
     return race_track, spawn_env
+
+
+# ---------------------------------------------------------------------------
+# Live course — the real Anduril-6 VQ1 export, loaded at import.
+#
+# normal_offset_deg=-90: the gate ACTOR yaw differs from the fly-through NORMAL
+#   by a fixed -90 deg (confirmed against the render — gates come up face-on).
+# start_altitude_m=29: the START gate sits ~29 m up; the whole course + spawn is
+#   recentered so START is at (0, 0, 29).
+#
+# There is deliberately NO fallback to _PLACEHOLDER_TRACK: a failed load means
+# the course file is missing/corrupt, and silently racing the wrong geometry is
+# far worse than a hard, diagnostic stop.
+# ---------------------------------------------------------------------------
+_COURSE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "course_gates_cm.json")
+
+try:
+    RACE_TRACK, SPAWN = load_course_json(
+        _COURSE_PATH, start_altitude_m=29, normal_offset_deg=-90)
+except Exception as exc:  # noqa: BLE001 -- re-raised loudly with diagnostics
+    raise RuntimeError(
+        f"track.py: failed to load the live course from {_COURSE_PATH!r}: "
+        f"{type(exc).__name__}: {exc}. This is fatal by design -- there is NO "
+        f"placeholder fallback. Confirm course_gates_cm.json exists next to "
+        f"track.py and passes the UE->MuJoCo self-validation."
+    ) from exc
