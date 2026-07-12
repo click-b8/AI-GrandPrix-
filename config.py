@@ -63,6 +63,8 @@ GATE_WIDTH = 1.5          # meters (MultiGP standard)
 GATE_HEIGHT = 1.5         # meters
 GATE_TOLERANCE = 1.0      # meters — pass radius around gate center
 TRACK_BOUNDS = 160.0      # meters — arena boundary (sized to the Anduril-6 VQ1 course extent)
+SPAWN_PITCH_DEG = -17.8   # measured nose-down rest attitude at spawn (powered de-risk 2026-07-11);
+                          # confirmed hypothesis A (body attitude, not IMU mount). Baked into env spawn.
 
 # --- Motor dynamics (Swift: real motors have response lag) ---
 MOTOR_TAU = 0.02                  # motor time constant in seconds (~50Hz bandwidth)

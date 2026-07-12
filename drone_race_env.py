@@ -23,7 +23,7 @@ from config import (
     REWARD_GATE_PASSED, REWARD_PROGRESS, REWARD_PERCEPTION,
     REWARD_CMD_SMOOTHNESS, REWARD_CRASH_PENALTY, REWARD_BODY_RATE_PENALTY,
     REWARD_TIME_PENALTY,
-    GATE_TOLERANCE, TRACK_BOUNDS,
+    GATE_TOLERANCE, TRACK_BOUNDS, SPAWN_PITCH_DEG,
     DOMAIN_RAND, MASS_RANGE, THRUST_NOISE, LATENCY_STEPS, DRAG_COEFF_RANGE,
     MOTOR_TAU,
     OBS_NOISE_POS, OBS_NOISE_VEL, OBS_NOISE_RPY, OBS_NOISE_ANGVEL,
@@ -493,13 +493,19 @@ class DroneRaceEnv(gym.Env):
         mujoco.mj_resetData(self._model, self._data)
 
         # Spawn from the real course: position + yaw heading (faces the START
-        # gate ~23 m ahead). Roll/pitch start level.
-        # TODO(pitch): the UE starting-grid actor may sit pitched on the launch
-        # ramp; the export only carries yaw, so pitch is level for now.
+        # gate ~23 m ahead) + a nose-down PITCH. The drone rests -17.8 deg
+        # nose-down at the start — confirmed by the powered de-risk (rest accel
+        # [-2.999,0,-9.340]; the FPV gate lands just-above-center only with this
+        # body pitch). Roll = 0. Deploy keeps R_mount = identity. See
+        # obsidian/open-questions.md "Powered de-risk RESOLVED".
+        # q = qz(yaw) (x) qy(pitch), w-first. In MuJoCo FLU a POSITIVE rotation
+        # about body +y drops the nose (+x -> -z), so nose-down uses -pitch here.
         spawn_yaw = float(SPAWN[3])
+        pitch = np.radians(-SPAWN_PITCH_DEG)  # SPAWN_PITCH_DEG is -17.8 (nose-down)
+        cy, sy = np.cos(spawn_yaw / 2.0), np.sin(spawn_yaw / 2.0)
+        cp, sp = np.cos(pitch / 2.0), np.sin(pitch / 2.0)
         self._data.qpos[0:3] = SPAWN[:3]
-        self._data.qpos[3:7] = [np.cos(spawn_yaw / 2.0), 0.0, 0.0,
-                                np.sin(spawn_yaw / 2.0)]
+        self._data.qpos[3:7] = [cy * cp, -sy * sp, cy * sp, sy * cp]
         self._data.qvel[:] = 0.0
 
         mujoco.mj_forward(self._model, self._data)

@@ -177,8 +177,10 @@ class _MAVLinkReceiver:
         self._last_imu_usec = None                   # for dt from message time, not wall-clock
         self._accel_window = deque(maxlen=10)        # rolling accel for a denoised GO seed
         self._dt_fallback_count = 0                  # times dt fell back to nominal
-        self._dt_sample_count = 0                    # total _imu_dt calls
+        self._dt_sample_count = 0                    # total _imu_dt calls (deduped)
         self._dt_last_warn = 0                        # fallback count at last warning
+        self._dup_dropped = 0                        # duplicate-time_usec samples dropped
+        self._dup_last_log = 0                        # dup count at last log
 
     def _imu_dt(self, time_usec):
         """dt from HIGHRES_IMU.time_usec deltas (sim time), NOT wall-clock arrival.
@@ -195,20 +197,33 @@ class _MAVLinkReceiver:
             self._warn_dt(f"bad time_usec delta={delta}us"); return nominal
         return delta / 1e6
 
+    def _note_dup(self):
+        """Counted log for dropped duplicate-time_usec samples. Measured on the live
+        v3385 sim: HIGHRES_IMU repeats the previous time_usec ~12-28% of samples while
+        armed. We DROP those (see _loop) rather than feed the filter a repeated instant
+        with a fallback dt — dedup is strictly better than integrate-twice."""
+        self._dup_dropped += 1
+        if self._dup_dropped == 1 or self._dup_dropped - self._dup_last_log >= 1000:
+            self._dup_last_log = self._dup_dropped
+            total = self._dup_dropped + self._dt_sample_count
+            logger.info("[GravityFilter] dropped %d duplicate-time_usec IMU samples "
+                        "(%.1f%% of %d received) — dedup, not double-integrate.",
+                        self._dup_dropped, 100.0 * self._dup_dropped / max(1, total), total)
+
     def _warn_dt(self, why):
-        # COUNTED warning (was warn-once). Measured on the live v3385 sim: HIGHRES_IMU
-        # emits DUPLICATE time_usec stamps (delta==0) ~12-28% of samples while armed
-        # (0% true reordering, no >1s gaps) — so this fallback fires routinely, not
-        # rarely. Warn on the first hit, then periodically with the running rate.
+        # COUNTED warning (was warn-once). With duplicate stamps now DROPPED upstream
+        # (see _note_dup / _loop), this fires only for genuine gaps: missing time_usec,
+        # true reordering (delta<0, measured 0% live), or a >1s hole. Rare, but kept as
+        # a guard. Warn on the first hit, then periodically with the running rate.
         self._dt_fallback_count += 1
         if (self._dt_fallback_count == 1
                 or self._dt_fallback_count - self._dt_last_warn >= 500):
             self._dt_last_warn = self._dt_fallback_count
             frac = 100.0 * self._dt_fallback_count / max(1, self._dt_sample_count)
             logger.warning("[GravityFilter] dt fallback to 1/115 nominal (%s); "
-                           "count=%d (%.1f%% of %d IMU samples) — dup time_usec is "
-                           "expected on this sim, gyro integration runs on nominal dt "
-                           "for those steps.", why, self._dt_fallback_count,
+                           "count=%d (%.1f%% of %d non-dup IMU samples) — genuine "
+                           "gap/reorder; gyro integration runs on nominal dt for those "
+                           "steps.", why, self._dt_fallback_count,
                            frac, self._dt_sample_count)
 
     def start(self) -> None:
@@ -261,9 +276,17 @@ class _MAVLinkReceiver:
                         float(msg.rollspeed), float(msg.pitchspeed), float(msg.yawspeed)
                     )
             elif msg_type == "HIGHRES_IMU":
+                imu_usec = getattr(msg, "time_usec", None)
+                # Drop duplicate-timestamp samples (~12-28% live). The sim repeats the
+                # previous time_usec; feeding that repeated instant to the filter with a
+                # fallback dt double-integrates it. Dedup is strictly better. Genuine
+                # reordering (delta<0, 0% live) still hits the <=0 guard in _imu_dt.
+                if imu_usec is not None and imu_usec == self._last_imu_usec:
+                    self._note_dup()
+                    continue
                 accel = np.array([msg.xacc, msg.yacc, msg.zacc], dtype=float)    # FRD
                 gyro = np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=float)  # FRD
-                dt = self._imu_dt(getattr(msg, "time_usec", None))
+                dt = self._imu_dt(imu_usec)
                 g_frd = self._grav_est.update(accel, gyro, dt)                   # gravity-down FRD
                 self._accel_window.append(accel)
                 with _telem_lock:

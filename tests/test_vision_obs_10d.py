@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from config import VISION_STATE_DIM, FPV_RESOLUTION, FPV_FRAME_STACK
+from config import VISION_STATE_DIM, FPV_RESOLUTION, FPV_FRAME_STACK, SPAWN_PITCH_DEG
 
 
 def _make_env_reset():
@@ -49,9 +49,14 @@ def test_state_layout_and_ranges_at_rest():
     try:
         state = obs["state"]
         gravity, body_rates, prev_action = state[0:3], state[3:6], state[6:10]
-        # Gravity is a UNIT vector (contract), pointing down in FLU at rest.
+        # Gravity is a UNIT vector (contract), pointing down in FLU.
         np.testing.assert_allclose(np.linalg.norm(gravity), 1.0, atol=1e-4)
-        np.testing.assert_allclose(gravity, [0.0, 0.0, -1.0], atol=1e-2)
+        # Spawn is intentionally NOT level: the drone rests SPAWN_PITCH_DEG (-17.8°)
+        # nose-down (powered de-risk, hypothesis A). Gravity-down in FLU body is then
+        # [sin|p|, 0, -cos|p|], which matches the deploy filter's rest value and closes
+        # the train/deploy start-of-episode mismatch. (Level [0,0,-1] would be wrong now.)
+        p = np.radians(abs(SPAWN_PITCH_DEG))
+        np.testing.assert_allclose(gravity, [np.sin(p), 0.0, -np.cos(p)], atol=1e-2)
         # At rest: body rates ~0, prev_action zero, all finite.
         np.testing.assert_allclose(body_rates, [0.0, 0.0, 0.0], atol=1e-3)
         np.testing.assert_allclose(prev_action, np.zeros(4), atol=1e-6)
