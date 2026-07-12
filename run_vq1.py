@@ -176,12 +176,15 @@ class _MAVLinkReceiver:
         self._grav_est = GravityEstimator()          # A2 filter, updated per IMU sample
         self._last_imu_usec = None                   # for dt from message time, not wall-clock
         self._accel_window = deque(maxlen=10)        # rolling accel for a denoised GO seed
-        self._dt_warned = False
+        self._dt_fallback_count = 0                  # times dt fell back to nominal
+        self._dt_sample_count = 0                    # total _imu_dt calls
+        self._dt_last_warn = 0                        # fallback count at last warning
 
     def _imu_dt(self, time_usec):
         """dt from HIGHRES_IMU.time_usec deltas (sim time), NOT wall-clock arrival.
         UDP jitter must not corrupt gyro integration. Nominal 1/115 fallback + warn."""
         nominal = 1.0 / 115.0
+        self._dt_sample_count += 1
         if time_usec is None:
             self._warn_dt("HIGHRES_IMU.time_usec missing"); return nominal
         if self._last_imu_usec is None:
@@ -193,10 +196,20 @@ class _MAVLinkReceiver:
         return delta / 1e6
 
     def _warn_dt(self, why):
-        if not self._dt_warned:
-            self._dt_warned = True
+        # COUNTED warning (was warn-once). Measured on the live v3385 sim: HIGHRES_IMU
+        # emits DUPLICATE time_usec stamps (delta==0) ~12-28% of samples while armed
+        # (0% true reordering, no >1s gaps) — so this fallback fires routinely, not
+        # rarely. Warn on the first hit, then periodically with the running rate.
+        self._dt_fallback_count += 1
+        if (self._dt_fallback_count == 1
+                or self._dt_fallback_count - self._dt_last_warn >= 500):
+            self._dt_last_warn = self._dt_fallback_count
+            frac = 100.0 * self._dt_fallback_count / max(1, self._dt_sample_count)
             logger.warning("[GravityFilter] dt fallback to 1/115 nominal (%s); "
-                           "gyro integration may drift. This warns once.", why)
+                           "count=%d (%.1f%% of %d IMU samples) — dup time_usec is "
+                           "expected on this sim, gyro integration runs on nominal dt "
+                           "for those steps.", why, self._dt_fallback_count,
+                           frac, self._dt_sample_count)
 
     def start(self) -> None:
         self._running = True

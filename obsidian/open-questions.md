@@ -169,6 +169,49 @@ the drone sitting at spawn. Nothing was sent to the sim. Findings vs expectation
   from these stamps, so its dt handling must reject nonpositive/outlier deltas
   rather than integrate them.
 
+### Powered de-risk attempt (2026-07-11) — control needs a live GO; gyro STILL open
+
+Follow-up POWERED session (`tools/powered_derisk.py`, authorized dev run, not a
+timed attempt): arm → TIMESYNC → command a gentle pure-pitch burst (0.30 rad/s,
+thrust 0.30, 1.5 s) via `SET_ATTITUDE_TARGET type_mask=128`, recording IMU +
+vision throughout. **The maneuver did NOT achieve controlled motion, so the gyro
+question is NOT resolved.** What we learned:
+
+- **Control is ineffective without a live race GO.** After a fresh sim relaunch,
+  no GO countdown fired (the `ENCAPSULATED_DATA` race-status stream is present but
+  never crosses into GO on its own). With `--force-no-go` I commanded the burst
+  anyway: the FPV view was **identical** at rest and mid-pitch, accel was static
+  (rest == burst to 3 d.p.), and gyro stayed exactly 0. The drone did not respond
+  to `SET_ATTITUDE_TARGET`. This is *why* `run_vq1` gates control on GO — the sim
+  only honors control when the race is live. **A genuine race start is required**
+  to command the drone (someone/something must trigger the countdown).
+
+- **`HIGHRES_IMU` streams only after ARM.** Idle/pre-race the sim emits only
+  HEARTBEAT + ENCAPSULATED_DATA; IMU begins once armed. (Explains why a no-arm
+  listen now returns zero IMU, unlike the earlier session that was race-active.)
+
+- **Gyro liveness — STILL UNVERIFIED (do NOT read as "dead").** Gyro was 0.0
+  throughout, but the drone never actually rotated, so this tells us nothing about
+  the channel. The prior 🔴-if-confirmed flag stays OPEN, pending a run where the
+  drone genuinely moves (real GO). Between runs the rest attitude drifted from
+  −17.8° to ~+47° and the FPV view is now off-course scenery (no gate/path) — the
+  drone is displaced/lodged in geometry from the forced attempts; **the sim needs
+  a race reset before any clean at-spawn capture.**
+
+- **`time_usec` refined (while armed).** 0% true reordering (`<0` deltas) and no
+  >1 s gaps — the earlier "non-monotonic" read was DUPLICATE stamps (`delta==0`),
+  measured at **~12–28% of samples** while armed (higher, ~50–70%, in the near-
+  frozen pre-race state). That is ≫1%, so per the brief I converted `run_vq1`'s
+  warn-once dt fallback to a **counted warning** (`_MAVLinkReceiver._warn_dt`).
+  The A2 filter already falls back to nominal 1/115 on `delta<=0`, which is the
+  right behavior for duplicate stamps.
+
+- **A-vs-B (pitch mechanism) and FPV tilt-sign remain OPEN** — both needed the
+  in-motion / at-spawn frames this session failed to produce.
+
+Raw IMU log + frames saved by the tool (`derisk_imu.csv`, `derisk_*.png`) so a
+future run is re-analyzable without re-flying.
+
 ## 🟢 Later-phase
 
 ### What's inference time on target hardware?
