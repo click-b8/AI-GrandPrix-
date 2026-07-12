@@ -153,16 +153,20 @@ def get_difficulty(progress: float) -> float:
 
 
 class CurriculumCallback(BaseCallback):
-    """Update environment difficulty + motion blur warmup based on training progress.
+    """Update environment difficulty by training progress, and (only if motion
+    blur is enabled for this run) apply the staged blur warmup.
 
-    Motion blur warmup (from event-sharp-nerf-drones): motion blur modeling
-    activates after MOTION_BLUR_WARMUP steps, allowing the network to first
-    learn coarse gate geometry from clean images before adding blur.
+    Motion blur is OFF by default for VQ1 (see --motion-blur): it triples render
+    cost — the throughput bottleneck — for a robustness benefit VQ1 doesn't need
+    (completion, not speed; slow flight => minimal deploy blur). When explicitly
+    enabled it uses the staged warmup (event-sharp-nerf-drones): clean images
+    first so the net learns coarse gate geometry, then blur after MOTION_BLUR_WARMUP.
     """
 
-    def __init__(self, total_timesteps, verbose=1):
+    def __init__(self, total_timesteps, motion_blur=False, verbose=1):
         super().__init__(verbose)
         self._total_timesteps = total_timesteps
+        self._motion_blur = motion_blur
         self._last_difficulty = -1.0
         self._blur_enabled = False
 
@@ -179,8 +183,9 @@ class CurriculumCallback(BaseCallback):
                 print(f'\n[Curriculum] Step {self.num_timesteps:,} '
                       f'({progress:.1%}) -> difficulty={difficulty:.2f}')
 
-        # Staged motion blur warmup (event-sharp-nerf-drones pattern)
-        if not self._blur_enabled and self.num_timesteps >= MOTION_BLUR_WARMUP:
+        # Staged motion blur warmup — ONLY when blur is enabled for this run.
+        if (self._motion_blur and not self._blur_enabled
+                and self.num_timesteps >= MOTION_BLUR_WARMUP):
             self._blur_enabled = True
             env = self.training_env
             for i in range(env.num_envs):
@@ -321,6 +326,9 @@ def parse_args():
     p.add_argument('--eval-freq', type=int, default=25_000, help='timesteps between evals')
     p.add_argument('--eval-episodes', type=int, default=5)
     p.add_argument('--save-freq', type=int, default=50_000, help='timesteps between checkpoints')
+    p.add_argument('--motion-blur', choices=['on', 'off'], default='off',
+                   help="motion-blur sim (3x render cost). OFF for VQ1 (completion, not "
+                        "speed; minimal deploy blur). Turn ON explicitly for VQ2/robustness.")
     p.add_argument('--no-progress-bar', action='store_true',
                    help='disable the tqdm/rich progress bar (useful for non-TTY smoke runs)')
     return p.parse_args()
@@ -384,7 +392,8 @@ def main():
             tensorboard_log=os.path.join(save_dir, 'tb_logs'),
         )
 
-    curriculum_cb = CurriculumCallback(args.total_timesteps)
+    use_motion_blur = args.motion_blur == 'on'
+    curriculum_cb = CurriculumCallback(args.total_timesteps, motion_blur=use_motion_blur)
     # CheckpointCallback counts CALLS (per vec-step); divide by n_envs for timesteps.
     checkpoint_cb = CheckpointCallback(
         save_freq=max(1, args.save_freq // args.n_envs),
@@ -403,7 +412,10 @@ def main():
     print(f'State: {VISION_STATE_DIM}D (gravity_unit(3) + body_rates(3) + prev_action(4))')
     print(f'Feature extractor: CoarseCNN(64D) + FineCNN(128D) + StateMLP(64D) = 256D')
     print(f'Curriculum: medium(0-30%) -> ramp(30-80%) -> full(80-100%)')
-    print(f'Motion blur warmup at step {MOTION_BLUR_WARMUP:,}')
+    if use_motion_blur:
+        print(f'Motion blur: ON (staged warmup at step {MOTION_BLUR_WARMUP:,}, 3x render cost)')
+    else:
+        print(f'Motion blur: OFF (VQ1 default — full render throughput all run)')
     print(f'Envs: {args.n_envs} ({vec_env_cls.__name__})   save_dir: {save_dir}')
     print(f'Eval: every {args.eval_freq:,} steps, {args.eval_episodes} episodes '
           f'-> eval/gates_passed + eval/success_rate')
