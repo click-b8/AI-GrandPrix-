@@ -165,6 +165,10 @@ def main():
                 if not go:
                     print("[force-no-go] GO never fired — commanding the maneuver anyway "
                           "(authorized dev de-risk, NOT a timed attempt).")
+                # Re-ARM at GO in case the race reset disarmed us, so control lands.
+                conn.mav.command_long_send(tsys, tcomp,
+                                           mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                                           0, 1, 0, 0, 0, 0, 0, 0)
                 boot_ms = int(time.time() * 1000)
 
                 def send(roll, pitch, yaw, thr):

@@ -129,7 +129,16 @@ gate vertically *on top of* whatever the camera tilt does; the two partially
 cancel. A clean sign check now needs our env spawned at the measured −17.8°
 pitch with matched gate geometry, then compare the vertical gate position to
 this frame. So resolving the spawn-pitch (B5) is a prerequisite to closing this.
-Frame kept for reference. OPEN.
+Frame kept for reference.
+
+**RESOLVED (2026-07-11, powered live-GO run) — sign is CORRECT (camera tilts
+UP).** See the powered de-risk resolution below. In short: at rest the body is
+−17.8° nose-down yet the ~level START gate sits just-above-center, which requires
+a camera tilted UP ~+20° relative to the body (nearly cancelling the nose-down
+to give a near-level view) — exactly §3.8's +20°. A level body with that up-tilt
+would put the gate LOW, which is what our env shows at its level spawn, so our
+`−FPV_TILT_DEG` up-tilt matches the real sim. Residual: quantitative cross-check
+once B5 bakes the −17.8° spawn (expect the gate at ~48%).
 
 ### IMU + telemetry availability / health (de-risk sniff 2026-07-11)
 
@@ -211,6 +220,44 @@ question is NOT resolved.** What we learned:
 
 Raw IMU log + frames saved by the tool (`derisk_imu.csv`, `derisk_*.png`) so a
 future run is re-analyzable without re-flying.
+
+### Powered de-risk RESOLVED (2026-07-11, real race GO)
+
+Re-ran `tools/powered_derisk.py` waiting on a genuine race the operator started;
+the countdown armed and GO fired (`race_start` 2915 ms ahead → GO), the drone was
+at a CLEAN spawn (rest accel back to `[-2.999, -0.002, -9.340]`, −17.8°), and this
+time control was effective — the maneuver actually moved the drone. Three
+questions close:
+
+- **✅ Gyro is LIVE (clears the 🔴 flag).** During the pitch burst `max|gyro| =
+  0.848 rad/s`, dominant on the **pitch (y)** axis with x/z gyro **exactly 0** —
+  a clean pure-pitch rotation, not a tumble. The earlier all-zero gyro was purely
+  "drone not moving," never a dead channel. `body_rates` (obs dims 3–5) and the A2
+  filter's gyro prediction have a real signal.
+
+- **✅ Pitch A-vs-B → hypothesis A (non-level body spawn).** Two independent lines
+  now favor A over B (fixed IMU/camera mount offset):
+  (1) *pure-pitch under maneuver* — gyro stays pure pitch (x,z ≡ 0), accel-y stays
+  at its rest value (max dev 0.004 m/s²), no roll coupling;
+  (2) *rest camera geometry* — B (level body + up-tilted ~20° camera/IMU mount)
+  predicts the level gate should sit LOW in frame, but it sits just-above-center,
+  which requires the body to actually be pitched −17.8° nose-down. So the −17.8°
+  is the drone's real body attitude at spawn. **Fix (B5): bake a −17.8° nose-down
+  pitch into the env spawn quaternion; keep the deploy filter `R_mount = identity`**
+  — matches the working hypothesis in [[observation-spec]], now confirmed.
+
+- **✅ FPV tilt-sign correct** (camera up ~+20°, matches §3.8) — see the resolution
+  appended to the tilt-sign entry above. Our env's `−FPV_TILT_DEG` up-tilt matches
+  the real sim; the "gate low in our level-spawn render" is exactly the expected
+  up-tilt behavior, not a sign bug.
+
+- **time_usec (armed, live race):** 12.7% duplicate stamps, **0% reordering**, no
+  >1 s gaps — consistent with the prior armed captures; the counted dt-fallback
+  warning (`run_vq1`) stands.
+
+Still open: (ii)-adjacent — the in-flight gravity-filter residual envelope for B5
+noise calibration (needs the A2 filter logging under aggressive flight, a bigger
+run than this gentle burst).
 
 ## 🟢 Later-phase
 
