@@ -259,6 +259,40 @@ Still open: (ii)-adjacent — the in-flight gravity-filter residual envelope for
 noise calibration (needs the A2 filter logging under aggressive flight, a bigger
 run than this gentle burst).
 
+### Attitude-termination envelope — tilt-from-vertical proposal (PENDING desktop ep_len data, NOT applied)
+
+Spawn-envelope diagnostic (2026-07-13): under PPO-init action noise, fresh-spawn
+episodes terminate in ~7 steps (~0.07 s), and this is **independent of the −17.8°
+spawn pitch** (level 7.17 vs pitched 7.10 steps; 100% terminate via the ROLL
+condition, 0% via pitch). Two mechanisms:
+
+- `_quat_to_rpy` extracts pitch via `arcsin(clip(...))`, clamped to ±90°, so the
+  `abs(pitch) > 120°` termination limb (`drone_race_env.py`) is **unreachable** —
+  attitude termination is effectively roll-only; a nose-over past 90° flips into
+  the roll condition via the euler gimbal.
+- Roll starts at 0° for any spawn, and random ±12 rad/s (`MAX_BODY_RATE`) roll
+  commands walk it through ±120° in ~7 steps.
+
+So the −17.8° spawn is **exonerated** (keep it), and the ~0.07 s episodes are a
+general random-init property, not a spawn-pitch artifact.
+
+**PROPOSAL (do NOT apply yet):** replace the euler roll/pitch attitude termination
+with a single gimbal-free **tilt-from-vertical** criterion — terminate when the
+body-up axis deviates more than Θ from world-up, i.e. `R[2,2] < cos(Θ)`. At
+Θ ≈ 120–135° this is symmetric, well-defined, and fixes the dead pitch-limb; a
+modest Θ widening also gives early-learning "oxygen" if the short episodes prove
+to be starving PPO. (A small per-step survival bonus is a weaker alternative —
+risks loitering against `REWARD_TIME_PENALTY`.)
+
+**STATUS — pending desktop ep_len data.** The Surface seed-0 run (237k steps)
+showed ep_len trending 7→10, i.e. PPO *is* clawing survival up, so the envelope
+may not be the bottleneck. Decide from the desktop seed-0 run (more steps): if its
+ep_len is ALSO stuck near 7–10 well past a few hundred k, the envelope is limiting
+early learning and this change is warranted; if ep_len keeps climbing, it's normal
+random-init and no change is needed. (Tilt-from-vertical is a cleaner "crashed"
+proxy than the euler limits regardless, so it's low-risk even if not strictly
+needed.)
+
 ## 🟢 Later-phase
 
 ### What's inference time on target hardware?
