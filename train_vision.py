@@ -311,6 +311,46 @@ def find_latest_checkpoint(save_dir):
     return latest, steps
 
 
+class RetentionCheckpointCallback(CheckpointCallback):
+    """CheckpointCallback that prunes old checkpoints after each save to bound disk
+    use: keeps the last `keep_last` by step, PLUS every `milestone_every` multiple,
+    and always the latest. Prevents the unbounded-checkpoint ENOSPC that killed the
+    2026-07-14 seed-1 run (59 unpruned 12.8 MB checkpoints filled the disk and
+    corrupted the in-flight save). keep_last <= 0 disables pruning.
+    """
+
+    def __init__(self, *args, keep_last=50, milestone_every=100_000, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.keep_last = keep_last
+        self.milestone_every = milestone_every
+
+    def _on_step(self) -> bool:
+        result = super()._on_step()
+        if self.keep_last > 0 and self.save_freq > 0 and self.n_calls % self.save_freq == 0:
+            self._prune_checkpoints()
+        return result
+
+    def _prune_checkpoints(self):
+        import glob
+        import re
+        paths = glob.glob(os.path.join(self.save_path, f"{self.name_prefix}_*_steps.zip"))
+        def step_of(p):
+            m = re.search(r"_(\d+)_steps\.zip$", os.path.basename(p))
+            return int(m.group(1)) if m else -1
+        entries = sorted(((step_of(p), p) for p in paths if step_of(p) >= 0), reverse=True)
+        if not entries:
+            return
+        keep = {p for _, p in entries[:self.keep_last]}                    # last N by step
+        keep |= {p for s, p in entries if s % self.milestone_every == 0}   # 100k milestones
+        keep.add(entries[0][1])                                            # always the latest
+        for _, p in entries:
+            if p not in keep:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Vision-based drone racing PPO training")
     p.add_argument('--n-envs', type=int, default=16,
@@ -326,6 +366,10 @@ def parse_args():
     p.add_argument('--eval-freq', type=int, default=25_000, help='timesteps between evals')
     p.add_argument('--eval-episodes', type=int, default=5)
     p.add_argument('--save-freq', type=int, default=50_000, help='timesteps between checkpoints')
+    p.add_argument('--keep-last', type=int, default=50,
+                   help='retain only the last N periodic checkpoints (+ every 100k '
+                        'milestone, + the latest) to bound disk use and prevent ENOSPC. '
+                        '0 disables pruning.')
     p.add_argument('--motion-blur', choices=['on', 'off'], default='off',
                    help="motion-blur sim (3x render cost). OFF for VQ1 (completion, not "
                         "speed; minimal deploy blur). Turn ON explicitly for VQ2/robustness.")
@@ -395,10 +439,13 @@ def main():
     use_motion_blur = args.motion_blur == 'on'
     curriculum_cb = CurriculumCallback(args.total_timesteps, motion_blur=use_motion_blur)
     # CheckpointCallback counts CALLS (per vec-step); divide by n_envs for timesteps.
-    checkpoint_cb = CheckpointCallback(
+    # RetentionCheckpointCallback also prunes to keep_last (+100k milestones) so the
+    # checkpoint dir can't grow unbounded and ENOSPC (see 2026-07-14 seed-1 loss).
+    checkpoint_cb = RetentionCheckpointCallback(
         save_freq=max(1, args.save_freq // args.n_envs),
         save_path=os.path.join(save_dir, 'checkpoints'),
         name_prefix='aigp_vision',
+        keep_last=args.keep_last,
     )
     gates_eval_cb = GatesPassedEvalCallback(
         eval_env,

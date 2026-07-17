@@ -259,7 +259,7 @@ Still open: (ii)-adjacent — the in-flight gravity-filter residual envelope for
 noise calibration (needs the A2 filter logging under aggressive flight, a bigger
 run than this gentle burst).
 
-### Attitude-termination envelope — tilt-from-vertical proposal (PENDING desktop ep_len data, NOT applied)
+### Attitude-termination envelope — tilt-from-vertical proposal (RESOLVED: not blocking; optional fidelity cleanup between runs only — DO NOT apply mid-run)
 
 Spawn-envelope diagnostic (2026-07-13): under PPO-init action noise, fresh-spawn
 episodes terminate in ~7 steps (~0.07 s), and this is **independent of the −17.8°
@@ -284,14 +284,16 @@ modest Θ widening also gives early-learning "oxygen" if the short episodes prov
 to be starving PPO. (A small per-step survival bonus is a weaker alternative —
 risks loitering against `REWARD_TIME_PENALTY`.)
 
-**STATUS — pending desktop ep_len data.** The Surface seed-0 run (237k steps)
-showed ep_len trending 7→10, i.e. PPO *is* clawing survival up, so the envelope
-may not be the bottleneck. Decide from the desktop seed-0 run (more steps): if its
-ep_len is ALSO stuck near 7–10 well past a few hundred k, the envelope is limiting
-early learning and this change is warranted; if ep_len keeps climbing, it's normal
-random-init and no change is needed. (Tilt-from-vertical is a cleaner "crashed"
-proxy than the euler limits regardless, so it's low-risk even if not strictly
-needed.)
+**STATUS — RESOLVED, not blocking (2026-07-14, Surface seed-1 @ ~590k).** The
+data question is answered: seed-1's longer run shows `ep_len_mean` **breaking out
+7 → 29, peaking 43** — PPO *is* clawing survival up strongly, *within* the ±120°
+euler envelope. So the envelope is **not** starving learning; the earlier "stuck
+7–10" read was just seed-0's too-short 237k run. **The termination fix is NOT
+needed and must NOT be applied mid-run** — the env stays byte-stable for the life
+of a training run (changing it would invalidate the resumed policy's learned
+dynamics). Tilt-from-vertical remains a cleaner, gimbal-free "crashed" proxy than
+the euler limits (and fixes the dead `|pitch|>120°` limb), so keep it as an
+**optional fidelity cleanup to apply BETWEEN runs only**, never during one.
 
 ## 🟢 Later-phase
 
