@@ -75,6 +75,67 @@ Everything here is safe to do immediately, in parallel with the local env work. 
 gets the DGX fully ready so that the moment the launch gates in §2.1 are green you
 can start training within minutes.
 
+## 1.0 Day one — clone + bootstrap (do this first, zero manual steps)
+
+This is now the default path for **any** machine that might come free on short
+notice — DGX, a work render box, anything. OS unknown ahead of time is fine; the
+script figures it out.
+
+```bash
+git clone https://github.com/click-b8/AI-GrandPrix-.git
+cd AI-GrandPrix-
+
+# Windows:
+powershell -ExecutionPolicy Bypass -File tools\bootstrap_train.ps1
+
+# Linux:
+bash tools/bootstrap_train.sh
+```
+
+One command does the whole sequence end to end:
+
+1. Creates a `.venv`, picks the best available Python (warns, doesn't die, if
+   only 3.14 is present — see §1.1 below for why 3.11/3.12 is preferred).
+2. Installs the pinned known-good stack (torch via the `cu126` wheel index,
+   `mujoco>=3.10`, `stable-baselines3>=2.9`, `gymnasium`, `Pillow`,
+   `tensorboard`, `pymavlink`, `pytest`).
+3. Checks CUDA availability — **warns and continues on CPU-only**, does not
+   abort. Some render boxes won't have a usable GPU; that's still a usable
+   training machine, just slower.
+4. SHA256-verifies `models_release/seed1_570k_resume.zip` before anything
+   touches it. A hash mismatch hard-stops the script — never trains on a
+   corrupted or unexpected checkpoint.
+5. Runs the fast pytest subset (`test_observation_contract`,
+   `test_vision_obs_10d`, `test_track_transform`, `test_attitude_filter`) plus
+   a 100-step smoke run of `train_vision.py` to prove the mechanics work on
+   this machine before committing to a real run.
+6. Launches the seed-1 resume under `tools/guardian.py` — a standalone
+   supervisor (not tied to any Claude session) that relaunches training if it
+   crashes, and logs `ep_len_mean` / `gates_passed` / free-disk-GB to
+   `<save-dir>/guardian.log` on a fixed interval. Auto-resume-from-checkpoint
+   and keep-last-N checkpoint pruning are unchanged — they still live inside
+   `train_vision.py` itself (`find_latest_checkpoint` +
+   `RetentionCheckpointCallback`); the guardian's job is purely to keep that
+   process alive and to watch disk space.
+
+### Windows troubleshooting — the resume-path WGL race at `--n-envs 8`
+
+On Windows, each `SubprocVecEnv` worker builds its own WGL (Windows OpenGL)
+rendering context. On a **resume** — `PPO.load()` plus N worker processes all
+initializing their own GL context in the same narrow window — running at
+**`--n-envs 8`** has raced the Windows GL driver's context creation and
+crashed the run before the first rollout completed. It has not reproduced at
+lower counts. Because of this, `bootstrap_train.ps1` defaults conservatively
+to **`-NEnvs 4`**. If you need more throughput: raise it gradually and only
+after a resume has succeeded cleanly once at the current count — don't jump
+straight back to 8. This is Windows/WGL-specific; `bootstrap_train.sh` on
+Linux defaults higher (`--n-envs 8`, raisable toward 16-32 on a DGX-class box
+per §2.3) because each EGL worker context is independent and does not race.
+
+If the bootstrap script doesn't fit your situation (no internet for a fresh
+clone, need to reuse an existing venv, debugging a step in isolation), the
+manual walkthrough below covers the same ground step by step.
+
 ## 1.1 Create the conda environment
 
 Use **Python 3.11 or 3.12**. Do **not** use 3.14 — SB3 / torch wheels are not
@@ -258,6 +319,100 @@ enough. Concretely —
   proprioceptive signal we could add to the state vector — but that grows the
   observation, so it must pass the contract test. **Do not block the first run on
   this.**
+
+### VQ1 minimal config — audit of what `difficulty` actually does (read-only, 2026-07-20)
+
+The prescriptive DR guidance above is about the visual side. This is a
+code-level audit of everything the numeric `_difficulty` curriculum knob
+(`drone_race_env.py`, `train_vision.py`) actually touches for the **current
+570k Surface/DGX lineage** (`train_vision.py`, vision-mode, `domain_rand=True`
+for training envs) — so a future fresh seed can be scoped deliberately instead
+of inheriting the full Swift-style envelope by default. **The running lineage
+is untouched by this audit — informational only, no env edits.**
+
+**Curriculum status check first:** `CURRICULUM` in `train_vision.py:135-141`
+holds difficulty at **0.5 flat** from 0% to 30% of `TOTAL_TIMESTEPS`
+(200,000,000), then ramps to 1.0 by 80%. At 570k steps that's **0.285%
+progress** — the lineage has been training at a **constant d=0.5** the entire
+run and the ramp (which starts at 60M steps) hasn't begun.
+
+**Active and actually consumed by the policy (physics-level — affects true
+simulated dynamics, not just an observation):**
+
+| Knob | Nominal (d=1) | At current d=0.5 | (a) required for DCL sim, or (b) robustness beyond VQ1's fixed course |
+|---|---|---|---|
+| Motor lag (`MOTOR_TAU * d`, `drone_race_env.py:423,778`) | 0.02 s tau | 0.01 s tau | **(a)** — real motors don't respond instantly; a completion-only, no-wind VQ1 flight still needs a low-level rate loop that isn't fighting a train/real actuation-lag mismatch. |
+| Action delay (`LATENCY_STEPS[1] * d`, `:480`) | 0-2 ctrl steps | 0-1 step | **(a)** — models real command latency (radio/FC pipeline); zero-latency training would overfit to an actuation timing VQ1 won't have. |
+| Drag coefficient (`DRAG_COEFF_RANGE[1] * d`, `:479`) | 0-0.3 | 0-0.15 | **(a)-leaning** — aerodynamic drag exists at flight speed regardless of course difficulty. Note: with `domain_rand=False` (eval env) drag is hard-**0**, so eval episodes currently fly in a no-drag world; training episodes get a randomized nonzero draw. |
+| Mass/inertia range (`MASS_RANGE`, `:474-477`) | ×[0.9, 1.05] | ×[0.95, 1.025] | **(b)** — VQ1 flies one known, presumably-weighed real drone. Some margin for battery/prop-wear mass drift is reasonable, but the full Swift-style ±5-10% envelope is a general-robustness buffer, not something VQ1's fixed course demands. |
+| Thrust noise (`THRUST_NOISE * d`, `:478`) | ±5% | ±2.5% | **(b)** — same logic as mass; a calibrated racing drone's real thrust curve is unlikely to swing this much, this is margin. |
+
+**Wired up but currently dead code for the vision-mode path this lineage
+trains on** (computed every step, but the value is never read by what the
+policy actually sees — worth knowing before assuming these curriculum knobs
+are doing anything for this lineage):
+
+- **`OBS_NOISE_POS/VEL/RPY/ANGVEL/GATE_POS/GATE_YAW`** (`step()`,
+  `drone_race_env.py:606-620`) — builds a noisy 24D-style `obs` vector scaled
+  by `d`, but `step()` returns `self._get_vision_obs()` for `vision_mode=True`
+  (`:699-700`), so this noisy vector is computed and discarded every step.
+- **`OBS_DELAY_STEPS`** (`:482-483`, `622-627`) — same fate; the delay buffer
+  only ever holds the discarded `obs`, not the image/state dict actually
+  returned.
+- **The entire `VIOSimulator` noise pipeline** (`VIO_GYRO_BIAS_INSTABILITY`,
+  `VIO_GYRO_WHITE_NOISE`, `VIO_ACCEL_BIAS`, `VIO_ACCEL_NOISE`,
+  `VIO_VEL_DRIFT_RATE`, `VIO_POS_DRIFT_RATE`, all scaled by `d`) — `imu_update`
+  and `visual_update` run every physics substep / visual tick and mutate
+  `est_pos`/`est_vel`/`est_angvel`, but `get_estimates()` (the only accessor,
+  `:230-236`) has **zero call sites** anywhere in the repo. `_get_minimal_state`
+  (`:863-883`) builds `gravity_unit`/`body_rates` straight from ground-truth
+  `qpos`/`qvel` and says so explicitly in its own docstring: *"No gravity/gyro
+  noise is injected yet... hook: gravity_unit += noise; renormalize"* — this is
+  documented pending work, gated on the measured deploy-filter residual (see
+  `obsidian/observation-spec.md` §A2/B5), not an oversight to fix speculatively.
+
+**Not curriculum-linked at all (fixed regardless of difficulty):**
+
+- **Gate tolerance** — `GATE_TOLERANCE = 1.0` m (`config.py:64`) is a flat
+  constant; there is no tolerance ramp.
+- **Spawn** — position/yaw/pitch come from the fixed `SPAWN` constant +
+  `-17.8°` pitch every reset (`:503-508`); no jitter term exists.
+- **Lighting / visual noise** — the MJCF `<light>` elements in `_build_mjcf`
+  are static literals; there is no brightness/contrast/color jitter in code
+  today, despite §2.2 above prescribing "small brightness/contrast jitter,
+  mild camera noise" — that visual DR **has not been implemented**, so current
+  vision-mode frames are pixel-deterministic modulo the physics-driven camera
+  pose.
+- **Motion blur** — its own `--motion-blur` flag, OFF by default and OFF for
+  this lineage (confirmed in `surface_seed1/train.log`); staged by
+  `MOTION_BLUR_WARMUP` timesteps, entirely disconnected from `_difficulty`.
+- **Event camera** — `EVENT_CAMERA_ENABLED = False`; DCL provides RGB only, so
+  `EventCameraSensor` is inactive for VQ1 regardless of difficulty.
+
+**Recommendation for a future fresh seed (does NOT apply to the running
+lineage):**
+
+1. **Keep at nominal, cheap and load-bearing:** motor lag, action delay, some
+   nonzero drag floor. These encode real actuation/timing physics VQ1 still
+   has even though it has no wind/opponents, and cost nothing to leave on.
+2. **Consider tightening, not zeroing:** mass range and thrust noise — VQ1's
+   single fixed, presumably-calibrated real drone doesn't need the full
+   Swift-style uncertainty envelope. A fresh seed could run a lower difficulty
+   ceiling (e.g. cap the ramp at ~0.6-0.7 instead of 1.0) rather than inventing
+   a new knob.
+3. **Decide deliberately, don't leave inert:** the VIO noise pipeline and the
+   `OBS_NOISE_*`/`OBS_DELAY_STEPS` block currently burn RNG draws and per-step
+   compute (VIO runs every physics substep) for zero effect on what the vision
+   policy sees. Either explicitly skip `VIOSimulator` updates when
+   `vision_mode=True` and no consumer exists yet, or wire `get_estimates()`
+   into `_get_minimal_state()` once the B5 measured noise floor lands — but
+   leaving it silently computed-and-discarded should be a conscious choice,
+   not the default for a new lineage.
+4. **Leave untouched:** gate tolerance, spawn, and lighting — none are
+   curriculum-linked, and none need a curriculum change to reach VQ1's easy
+   bar. If the visual jitter in §2.2 is still wanted, note that it doesn't
+   exist in code yet and is a separate implementation task, not a config
+   value.
 
 ## 2.3 Vectorized envs — use `SubprocVecEnv` (this is decided, not an A/B)
 
