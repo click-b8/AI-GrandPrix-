@@ -143,16 +143,7 @@ class ServoConfig:
     # slow the approach, lower hover_cruise (thrust drives forward speed via the
     # tilted thrust vector) -- NOT pitch, which is the same axis holding attitude.
     cruise_pitch_deg: float = -18.0   # forward lean; ~matches spawn so the loop sits quiet
-    k_bank: float = 1.0               # desired roll ANGLE (rad) per unit u_err (0.45->1.0)
-    # Guidance sign. Flight 6: u ran away POSITIVE while bank commanded POSITIVE
-    # (drone LEFT of gate, banking RIGHT, drifting further LEFT) -- the actuator is
-    # verified K=+1, so this is an inverted GUIDANCE sign. bank_sign flips the WHOLE
-    # bank command (P and D together, so the derivative doesn't fight the flip).
-    # TEST VALUE -1.0 for the decisive one-race check: if u now CLOSES the bank
-    # convention was inverted (keep -1, check yaw too); if u runs away IDENTICALLY
-    # bank isn't translating at all -> revert to +1 and look elsewhere.
-    bank_sign: float = -1.0
-    yaw_sign: float = 1.0             # left as-is; flip after bank is confirmed
+    k_bank: float = 1.0               # desired roll ANGLE (rad) per unit control-u (0.45->1.0)
     max_bank_deg: float = 35.0
     k_yaw: float = 0.15               # nose ALIGNMENT only, not the correction (0.70->0.15)
     hover_cruise: float = 0.30        # 0.32->0.30 to SLOW the approach via thrust (not pitch).
@@ -591,31 +582,42 @@ class VisionServoController:
         else:
             self._size_locked = False
 
+        # LATERAL SIGN FIX (flights 6-7, root cause). The actuator is verified K=+1
+        # and the vertical channel is correct, yet BOTH bank and yaw were inverted
+        # -- the two lateral channels share exactly one input, u_err. Horizontal-
+        # only inversion == a horizontally-MIRRORED FPV image (a flip inverts
+        # left-right but not up-down, matching the data). The detector reports
+        # IMAGE coords; convert to a PHYSICAL control error here so guidance uses
+        # POSITIVE gains. u_ctrl>0 => gate physically RIGHT => bank/yaw RIGHT.
+        # Continuity/gating deliberately stay in IMAGE coords (det.u_err) -- they
+        # compare blob positions frame-to-frame, correct regardless of the mirror.
+        u_ctrl = -det.u_err
+
         if accepted:
-            # Filtered PD derivative on u,v (dirty-derivative: low-pass then diff,
-            # robust to the vision stream updating slower than the control loop).
+            # Filtered PD derivative on control-u, v (dirty-derivative: low-pass
+            # then diff, robust to the vision stream updating slower than control).
             if not had_recent:                       # fresh lock -> seed, no D spike
-                self._u_filt, self._v_filt = det.u_err, det.v_err
+                self._u_filt, self._v_filt = u_ctrl, det.v_err
                 du_dt = dv_dt = 0.0
             else:
                 dt = min(max(now - self._last_cmd_t, 1e-3), 0.5)
                 a = dt / (c.deriv_tau_s + dt)
-                self._u_filt += a * (det.u_err - self._u_filt)
+                self._u_filt += a * (u_ctrl - self._u_filt)
                 self._v_filt += a * (det.v_err - self._v_filt)
-                du_dt = (det.u_err - self._u_filt) / c.deriv_tau_s
+                du_dt = (u_ctrl - self._u_filt) / c.deriv_tau_s
                 dv_dt = (det.v_err - self._v_filt) / c.deriv_tau_s
             self._last_cmd_t = now
             self._last_seen_t = now
-            self._last_u_err = det.u_err
+            self._last_u_err = det.u_err   # IMAGE u for continuity/gating
             self._last_v_err = det.v_err
             self._last_size = det.size_frac
 
-            # BANK translates: P on u + D on du/dt (react to the offset GROWING).
-            # bank_sign flips the whole command (see config) for the flight-6 test.
-            des_roll = float(np.clip(c.bank_sign * (c.k_bank * det.u_err + c.kd_u * du_dt),
+            # BANK translates: P on control-u + D on d(control-u)/dt. Positive gains
+            # (the mirror is already handled in u_ctrl).
+            des_roll = float(np.clip(c.k_bank * u_ctrl + c.kd_u * du_dt,
                                      -math.radians(c.max_bank_deg),
                                      math.radians(c.max_bank_deg)))
-            des_yaw = float(np.clip(c.yaw_sign * c.k_yaw * det.u_err, -1.0, 1.0))  # nose only, P
+            des_yaw = float(np.clip(c.k_yaw * u_ctrl, -1.0, 1.0))  # nose only, P
             des_pitch = cruise_pitch
             # gate LOW in frame (v_err>0) => we're too HIGH => descend => less thrust.
             # P on v + D on dv/dt so a growing vertical error is chased early.
@@ -629,7 +631,8 @@ class VisionServoController:
                 thrust = c.hover_cruise * c.lost_thrust_scale
             elif dt_lost <= c.search_timeout_s:      # gentle yaw toward last-seen side
                 des_roll, des_pitch = 0.0, cruise_pitch
-                des_yaw = math.copysign(c.search_yaw, self._last_u_err or 1.0)
+                # yaw toward where the gate PHYSICALLY was (last image-u is mirrored)
+                des_yaw = math.copysign(c.search_yaw, (-self._last_u_err) or 1.0)
                 thrust = c.hover_cruise * c.lost_thrust_scale
             else:                                    # give up: level + hold hover
                 des_roll, des_pitch, des_yaw = 0.0, 0.0, 0.0
@@ -661,6 +664,6 @@ class VisionServoController:
 
         return {"throttle": thrust, "roll": roll_n, "pitch": pitch_n, "yaw": yaw_n,
                 "_debug": {"found": det.found, "accepted": accepted, "reject": reject,
-                           "u_err": det.u_err, "v_err": det.v_err,
+                           "u_err": det.u_err, "u_ctrl": u_ctrl, "v_err": det.v_err,
                            "size": det.size_frac, "des_roll": des_roll,
                            "des_pitch": des_pitch, "des_yaw": des_yaw}}

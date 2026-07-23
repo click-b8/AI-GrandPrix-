@@ -185,19 +185,21 @@ def test_gravity_rolled_right_positive():
 # --------------------------------------------------------------------------
 # guidance signs (outer loop)
 # --------------------------------------------------------------------------
-def test_gate_right_banks_and_yaws_by_convention():
-    # bank follows bank_sign*u, yaw follows yaw_sign*u (robust to the sign config).
-    cfg = ServoConfig()
-    cmd = VisionServoController().command(make_frame(0.80, 0.5), telem(), active_gate=0)
-    assert cmd["_debug"]["des_roll"] * cfg.bank_sign > 0.0   # gate right -> bank_sign dir
-    assert cmd["yaw"] * cfg.yaw_sign > 0.02
-
-
-def test_gate_left_banks_and_yaws_by_convention():
-    cfg = ServoConfig()
-    cmd = VisionServoController().command(make_frame(0.20, 0.5), telem(), active_gate=0)
-    assert cmd["_debug"]["des_roll"] * cfg.bank_sign < 0.0   # gate left -> opposite
-    assert cmd["yaw"] * cfg.yaw_sign < -0.02
+def test_lateral_convention_locked():
+    # LOCK the lateral sign convention -- this class of bug cost five flights.
+    # The DCL FPV is horizontally MIRRORED, so the physical control error
+    # u_ctrl = -image_u. A gate PHYSICALLY to the RIGHT (u_ctrl>0) MUST command
+    # bank AND yaw to the RIGHT (positive), moving the drone toward it.
+    # An image-LEFT blob is physically RIGHT:
+    right = VisionServoController().command(make_frame(0.20, 0.5), telem(), active_gate=0)
+    assert right["_debug"]["u_ctrl"] > 0
+    assert right["_debug"]["des_roll"] > 0.0    # bank right
+    assert right["yaw"] > 0.0                    # yaw right
+    # An image-RIGHT blob is physically LEFT -> command LEFT:
+    left = VisionServoController().command(make_frame(0.80, 0.5), telem(), active_gate=0)
+    assert left["_debug"]["u_ctrl"] < 0
+    assert left["_debug"]["des_roll"] < 0.0
+    assert left["yaw"] < 0.0
 
 
 def test_gate_low_reduces_thrust():
@@ -246,13 +248,13 @@ def test_yaw_rate_damped_by_gyro():
 # --------------------------------------------------------------------------
 def test_lost_gate_coasts_then_searches():
     ctl = VisionServoController()
-    # See a gate on the right, then lose it.
+    # Gate seen at IMAGE-right (make_frame 0.80) -> physically LEFT (mirror). Lose it.
     ctl.command(make_frame(0.80, 0.5), telem(), active_gate=0, now=100.0)
     dark = np.full((360, 640, 3), 25, dtype=np.uint8)
     coast = ctl.command(dark, telem(), active_gate=0, now=100.2)   # within reacquire
     assert abs(coast["_debug"]["des_yaw"]) < 1e-6
     search = ctl.command(dark, telem(), active_gate=0, now=101.5)  # past reacquire
-    assert search["_debug"]["des_yaw"] > 0.0   # search toward last-seen (right)
+    assert search["_debug"]["des_yaw"] < 0.0   # search toward PHYSICAL last-seen (left)
     assert not search["_debug"]["found"]
 
 
@@ -325,9 +327,9 @@ def test_derivative_adds_bank_on_growing_u():
     for i, cx in enumerate([0.53, 0.56, 0.59, 0.62], start=1):
         out = ctl.command(make_frame(cx, 0.5), telem(), active_gate=0, now=100.0 + i * 0.1)
     cfg = ServoConfig()
-    u = out["_debug"]["u_err"]
-    p_only = cfg.bank_sign * cfg.k_bank * u
-    # a growing offset (du/dt > 0) pushes bank BEYOND the proportional magnitude,
+    u_ctrl = out["_debug"]["u_ctrl"]
+    p_only = cfg.k_bank * u_ctrl
+    # a growing offset (du/dt != 0) pushes bank BEYOND the proportional magnitude,
     # in the same direction.
     assert abs(out["_debug"]["des_roll"]) > abs(p_only) + 1e-3
     assert out["_debug"]["des_roll"] * p_only > 0
@@ -339,8 +341,8 @@ def test_derivative_zero_when_u_constant():
     for i in range(5):
         out = ctl.command(make_frame(0.58, 0.5), telem(), active_gate=0, now=100.0 + i * 0.1)
     cfg = ServoConfig()
-    u = out["_debug"]["u_err"]
-    p_only = cfg.bank_sign * cfg.k_bank * u
+    u_ctrl = out["_debug"]["u_ctrl"]
+    p_only = cfg.k_bank * u_ctrl
     # steady u -> derivative decays to ~0 -> des_roll ~ proportional term
     assert abs(out["_debug"]["des_roll"] - p_only) < 0.03
 
