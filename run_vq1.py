@@ -446,18 +446,18 @@ async def run(
             "(tools/vision_servo_dryrun.py on a real frame; --hover-probe for the "
             "hover fraction). See vq1_vision_servo.py CALIBRATE banner."
         )
+    elif hover_probe is not None:
+        logger.warning(
+            "[HOVER PROBE] DIAGNOSTIC MODE — model NOT loaded/ignored. After GO, "
+            "commanding fixed thrust=%.3f with zero body rates for ~%.1fs, logging IMU "
+            "VERTICAL ACCEL (+up); vz is dead on v3385. Read the per-frame vert_accel "
+            "and the DONE verdict. Bracket hover across separate races (0.30/0.40/0.50). "
+            "NOT for submission.",
+            hover_probe, 2.0,
+        )
     else:
         _check_model_path(CANONICAL_MODEL_PATH)
         logger.info("Model path verified: %s", CANONICAL_MODEL_PATH)
-
-    if hover_probe is not None:
-        logger.warning(
-            "[HOVER PROBE] DIAGNOSTIC MODE — model loaded but IGNORED. After GO, "
-            "commanding fixed thrust=%.3f with zero body rates for ~%.1fs, logging vz. "
-            "Read the per-frame [HOVER PROBE] vz and the DONE verdict. Run separate "
-            "races at several thrust values to bracket the hover point. NOT for submission.",
-            hover_probe, 2.0,
-        )
 
     sim_conn = None
     if not _allow_stub_vision:
@@ -636,10 +636,10 @@ if __name__ == "__main__":
         default=None,
         metavar="THRUST",
         help="DIAGNOSTIC — ignore the model and command a FIXED thrust THRUST in "
-             "[0,1] with zero body rates for ~2s after GO, logging vz from "
-             "LOCAL_POSITION_NED each frame. Run separate races at e.g. 0.15/0.20/"
-             "0.25/0.30/0.35; the thrust where vz~=0 is DCL's hover fraction. "
-             "NOT for submission.",
+             "[0,1] with zero body rates for ~2s after GO, logging IMU vertical "
+             "acceleration each frame (vz is dead on v3385). Run separate races at "
+             "e.g. 0.30/0.40/0.50; the thrust where mean vert accel ~= 0 is DCL's "
+             "hover fraction. NOT for submission.",
     )
     args = parser.parse_args()
     if args.hover_probe is not None and not (0.0 <= args.hover_probe <= 1.0):

@@ -87,7 +87,10 @@ def wire_body_rate(axis: str, command_norm: float) -> float:
 # for this long while logging vz, then cut thrust to 0. Used to bracket DCL's
 # hover-thrust fraction across separate races (vz ~= 0 => that thrust hovers).
 HOVER_PROBE_DURATION_S = 2.0
-HOVER_PROBE_HOVER_EPS = 0.1   # |climb rate| below this (m/s) reads as hover
+# v3385 has NO LOCAL_POSITION_NED, so vz is dead -> the hover probe reads IMU
+# VERTICAL ACCELERATION instead (accel + gravity estimate). |vert accel| below
+# this (m/s^2) reads as hover.
+HOVER_PROBE_ACCEL_EPS = 0.5
 
 # type_mask = 128 = 0b10000000
 # bit 7 (0x80): IGNORE_ATTITUDE = 1  -> ignore quaternion
@@ -350,10 +353,15 @@ class SCUBALabMAVLinkAdapter:
             self.target_component = TARGET_COMPONENT_ID
 
         self._command_source = command_source
-        if command_source is not None:
+        # Skip model loading whenever the policy is not the control source:
+        # a hardcoded command_source (vision-servo) OR --hover-probe (fixed thrust,
+        # zero rates -- never needs a policy). Avoids the 9-channel checkpoint assert
+        # for diagnostics/hardcoded paths.
+        if command_source is not None or hover_probe is not None:
             self.adapter = None
-            logger.info("[SCUBA Lab MAVLink] command_source provided -> RL model "
-                        "NOT loaded; using hardcoded controller.")
+            why = "command_source (hardcoded controller)" if command_source is not None \
+                else "hover_probe (diagnostic)"
+            logger.info("[SCUBA Lab MAVLink] %s -> RL model NOT loaded.", why)
         else:
             logger.info("[SCUBA Lab MAVLink] Loading model: %s", model_path)
             self.adapter = SCUBALabAdapter(model_path, device=device)
@@ -372,7 +380,9 @@ class SCUBALabMAVLinkAdapter:
             "position":         [0.0, 0.0, 0.0],
             "velocity":         [0.0, 0.0, 0.0],   # body angular rates rad/s
             "orientation":      [0.0, 0.0, 0.0],   # Euler roll/pitch/yaw rad
-            "linear_velocity":  [0.0, 0.0, 0.0],   # world/NED linear vel m/s
+            "linear_velocity":  [0.0, 0.0, 0.0],   # world/NED linear vel m/s (DEAD on v3385)
+            "acceleration":     [0.0, 0.0, 0.0],   # FRD specific force m/s^2 (HIGHRES_IMU)
+            "gravity_frd":      [0.0, 0.0, 9.81],  # FRD gravity-down (A2 estimator)
         }
 
     def get_time_boot_ms(self) -> int:
@@ -384,11 +394,15 @@ class SCUBALabMAVLinkAdapter:
         velocity: tuple,
         position: tuple,
         linear_velocity: tuple = (0.0, 0.0, 0.0),
+        acceleration: tuple = (0.0, 0.0, 0.0),
+        gravity_frd: tuple = (0.0, 0.0, 9.81),
     ):
         self.latest_telemetry["orientation"]     = list(attitude)
         self.latest_telemetry["velocity"]        = list(velocity)
         self.latest_telemetry["position"]        = list(position)
         self.latest_telemetry["linear_velocity"] = list(linear_velocity)
+        self.latest_telemetry["acceleration"]    = list(acceleration)
+        self.latest_telemetry["gravity_frd"]     = list(gravity_frd)
 
     def _send(self, frame: bytes) -> bool:
         """Send frame over UDP. Routes via sim_conn.write() when a real connection
@@ -408,13 +422,30 @@ class SCUBALabMAVLinkAdapter:
             )
             return False
 
+    def _vertical_accel_up(self) -> float:
+        """World-UP kinematic acceleration (m/s^2) from the IMU, +up.
+
+        vz is dead on v3385 (no LOCAL_POSITION_NED), so hover is bracketed from
+        acceleration instead. Kinematic accel a = specific_force + gravity_down
+        (rest -> 0). Project onto up = -gravity/|gravity| so the reading stays
+        vertical even though the drone spawns pitched ~-17.8 deg."""
+        accel = np.asarray(self.latest_telemetry.get("acceleration", (0.0, 0.0, 0.0)), float)
+        grav = np.asarray(self.latest_telemetry.get("gravity_frd", (0.0, 0.0, 9.81)), float)
+        g_mag = float(np.linalg.norm(grav))
+        if g_mag < 1e-6:
+            return 0.0
+        a_kin = accel + grav                 # kinematic acceleration in FRD
+        up = -grav / g_mag                   # world-up unit vector in FRD
+        return float(a_kin @ up)
+
     def _hover_probe_command(self) -> Dict:
         """Diagnostic command source for --hover-probe (model ignored).
 
-        Before GO: zero (the wire-gate also zeros pre-GO, but be explicit).
-        For HOVER_PROBE_DURATION_S after GO: fixed thrust, zero body rates,
-        logging vz each frame. After the window: cut thrust to 0 and log a
-        one-time verdict. vz/z are NED (+down); climb rate = -vz (+up).
+        Before GO: zero. For HOVER_PROBE_DURATION_S after GO: fixed thrust, zero
+        body rates, logging IMU VERTICAL ACCELERATION each frame (vz is dead on
+        v3385). After the window: cut thrust and log a one-time verdict. The mean
+        vertical accel brackets hover: >0 thrust ABOVE hover (accelerating up),
+        <0 BELOW, ~0 hovers.
         """
         zero = {"throttle": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
         if not self._race_started_source():
@@ -423,42 +454,36 @@ class SCUBALabMAVLinkAdapter:
         now = time.time()
         if self._probe_start_time is None:
             self._probe_start_time = now
-            self._probe_z0 = float(self.latest_telemetry["position"][2])
             logger.info(
                 "[HOVER PROBE] GO — holding thrust=%.3f, zero rates, for %.1fs. "
-                "vz/z are NED (+down); climb = -vz (+up).",
+                "Reading IMU vertical accel (+up); vz is dead on v3385.",
                 self.hover_probe, HOVER_PROBE_DURATION_S,
             )
 
         elapsed = now - self._probe_start_time
         if elapsed <= HOVER_PROBE_DURATION_S:
-            vz = float(self.latest_telemetry["linear_velocity"][2])
-            z = float(self.latest_telemetry["position"][2])
-            self._probe_vz_sum += vz
+            vert = self._vertical_accel_up()
+            self._probe_vz_sum += vert
             self._probe_vz_n += 1
             logger.info(
-                "[HOVER PROBE] t=%.3fs thrust=%.3f  vz_ned=%+.4f m/s  "
-                "climb=%+.4f m/s(+up)  z_ned=%+.3f m",
-                elapsed, self.hover_probe, vz, -vz, z,
+                "[HOVER PROBE] t=%.3fs thrust=%.3f  vert_accel=%+.4f m/s^2 (+up)",
+                elapsed, self.hover_probe, vert,
             )
             return {"throttle": float(self.hover_probe), "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
 
         if not self._probe_summary_logged:
             self._probe_summary_logged = True
-            mean_vz = self._probe_vz_sum / max(self._probe_vz_n, 1)
-            mean_climb = -mean_vz
-            net_climb = -(float(self.latest_telemetry["position"][2]) - (self._probe_z0 or 0.0))
-            if abs(mean_climb) < HOVER_PROBE_HOVER_EPS:
-                verdict = "~= HOVER (vz~0) -- thrust ~= DCL hover fraction"
-            elif mean_climb > 0:
-                verdict = "CLIMBING — thrust ABOVE hover"
+            mean_a = self._probe_vz_sum / max(self._probe_vz_n, 1)
+            if abs(mean_a) < HOVER_PROBE_ACCEL_EPS:
+                verdict = "~= HOVER (vert accel ~0) -- thrust ~= DCL hover fraction"
+            elif mean_a > 0:
+                verdict = "CLIMBING (accel up) — thrust ABOVE hover"
             else:
-                verdict = "SINKING — thrust BELOW hover"
+                verdict = "SINKING (accel down) — thrust BELOW hover"
             logger.info(
-                "[HOVER PROBE] DONE thrust=%.3f over %.1fs (n=%d): mean climb=%+.4f m/s "
-                "(mean vz_ned=%+.4f), net climb=%+.3f m  ->  %s. Thrust now cut to 0.",
-                self.hover_probe, HOVER_PROBE_DURATION_S, self._probe_vz_n,
-                mean_climb, mean_vz, net_climb, verdict,
+                "[HOVER PROBE] DONE thrust=%.3f over %.1fs (n=%d): mean vert accel="
+                "%+.4f m/s^2 (+up)  ->  %s. Thrust now cut to 0.",
+                self.hover_probe, HOVER_PROBE_DURATION_S, self._probe_vz_n, mean_a, verdict,
             )
         return zero
 
@@ -578,6 +603,8 @@ class SCUBALabMAVLinkAdapter:
                     telemetry.get("velocity",        (0.0, 0.0, 0.0)),
                     telemetry.get("position",        (0.0, 0.0, 0.0)),
                     telemetry.get("linear_velocity", (0.0, 0.0, 0.0)),
+                    telemetry.get("acceleration",    (0.0, 0.0, 0.0)),
+                    telemetry.get("gravity_frd",     (0.0, 0.0, 9.81)),
                 )
 
             if now - last_control >= self.control_interval:
