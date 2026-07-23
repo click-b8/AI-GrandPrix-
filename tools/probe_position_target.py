@@ -89,6 +89,10 @@ class Probe:
         self.command_acks = []
         self.pos_target_echoes = 0
         self._accel_window = deque(maxlen=20)
+        # timestamped IMU trace (t_wall, gx, gy, gz, ax, ay, az) for every sample,
+        # phase-independent -- used by tools/probe_rate_vs_angle.py for the gyro
+        # time-series analysis. Bounded so a long session can't grow unbounded.
+        self.imu_trace = deque(maxlen=20000)
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True, name="ProbeRX").start()
@@ -122,6 +126,8 @@ class Probe:
                     acc = (float(msg.xacc), float(msg.yacc), float(msg.zacc))
                     gyro = (float(msg.xgyro), float(msg.ygyro), float(msg.zgyro))
                     self._accel_window.append(acc)
+                    self.imu_trace.append((time.time(), gyro[0], gyro[1], gyro[2],
+                                           acc[0], acc[1], acc[2]))
                     if ph in self.imu_acc:
                         self.imu_acc[ph].append(acc)
                         self.imu_gyro[ph].append((gyro[0]**2 + gyro[1]**2 + gyro[2]**2) ** 0.5)
