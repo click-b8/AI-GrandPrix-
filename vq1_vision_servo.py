@@ -131,7 +131,10 @@ class ServoConfig:
     # passed BESIDE gate 1. Only BANK translates. So bank does the correction; yaw
     # only aligns the nose. Geometry: ~0.9 m over ~2 s ~ 0.45 m/s^2 ~ 2.6 deg bank;
     # k_bank*u at u=0.05 must give ~0.045 rad -> k_bank ~ 1.0.
-    cruise_pitch_deg: float = -18.0   # forward lean held in cruise (nose-down neg)
+    # cruise_pitch -18 -> -8 (flight 4): HIGHEST-leverage fix. VQ1 is completion,
+    # not lap time. Halving forward speed ~doubles the correction window (~2s->~4s),
+    # which makes every existing gain adequate instead of always-too-late.
+    cruise_pitch_deg: float = -8.0    # forward lean held in cruise (nose-down neg)
     k_bank: float = 1.0               # desired roll ANGLE (rad) per unit u_err (0.45->1.0)
     max_bank_deg: float = 35.0
     k_yaw: float = 0.15               # nose ALIGNMENT only, not the correction (0.70->0.15)
@@ -140,11 +143,15 @@ class ServoConfig:
                                       # + forward drag, so cruise needs more. 0.35 flew well at
                                       # rest toward gate 1; 0.32 splits it. Too-high still
                                       # threads a gate; sinking cannot.
-    k_thrust_v: float = 0.15          # thrust change per unit v_err (0.027->0.15, 5x). Flight 3
-                                      # passed BELOW the gate: at v~0.6 the old gain moved thrust
-                                      # only ~2% -- nowhere near enough to descend in ~2s.
+    k_thrust_v: float = 0.06          # thrust change per unit v_err. 0.027 too weak (flight 3
+                                      # passed below), 0.15 DIVERGED (flight 4: positive
+                                      # feedback collapsed thrust to 0.134). 0.06 splits them.
     min_thrust: float = 0.05
     max_thrust: float = 0.60
+    # Hard clamp on |thrust - hover_cruise|. The vertical channel must NEVER be
+    # able to collapse the flight regardless of gain or sign (flight 4 ran thrust
+    # to 0.134 via positive feedback). Permanent safety net, keep it.
+    thrust_dev_max: float = 0.06
 
     # ---- PD derivative on the vision error (react to the error GROWING) ----
     # Flight 3: u and v both ramped ~linearly (0.02->0.82) and P-only was always
@@ -153,7 +160,7 @@ class ServoConfig:
     # vision frames update slower than the control loop, so a raw frame-to-frame
     # d/dt would be spiky/zero. kd_* ~0.4x the matching P gain.
     kd_u: float = 0.4                 # bank derivative gain (on du/dt), ~0.4 * k_bank
-    kd_v: float = 0.06                # thrust derivative gain (on dv/dt), ~0.4 * k_thrust_v
+    kd_v: float = 0.024               # thrust derivative gain (on dv/dt), ~0.4 * k_thrust_v
     deriv_tau_s: float = 0.15         # derivative low-pass time constant (s)
 
     # ---- attitude stabiliser (inner loop, from IMU) ----
@@ -170,7 +177,11 @@ class ServoConfig:
     # While we have a RECENT gate, reject a detection that is too small (a distant
     # gate) or that jumped too far frame-to-frame (a real gate can't teleport).
     # Once gateless past reacquire_s, gating is dropped so we can re-lock anything.
-    min_gate_size: float = 0.04       # reject size_frac below this while tracking
+    # Size Schmitt trigger (flight 4: sizes 0.040/0.041/0.042 against a single 0.04
+    # edge thrashed thrust 0.320<->0.236 frame-to-frame). Two thresholds with
+    # hysteresis: (re)lock only above accept, keep tracking down to reject.
+    gate_size_accept: float = 0.035   # size_frac needed to (re)acquire the size lock
+    gate_size_reject: float = 0.025   # drop the lock only below this
     max_u_jump: float = 0.5           # reject |u - last_u| above this while tracking
 
     # ---- lost-gate behaviour ----
@@ -466,6 +477,7 @@ class VisionServoController:
         self._u_filt = 0.0
         self._v_filt = 0.0        # low-pass state for the filtered PD derivative
         self._last_cmd_t = -1e9
+        self._size_locked = False  # size Schmitt-trigger state
         self._active_gate_prev = None
         self._t0 = None
         self._last_log_t = -1e9   # throttle for the per-frame tuning log
@@ -480,6 +492,7 @@ class VisionServoController:
         self._u_filt = 0.0
         self._v_filt = 0.0
         self._last_cmd_t = -1e9
+        self._size_locked = False
         self._t0 = None
         logger.info("[servo] reset for fresh race")
 
@@ -532,13 +545,24 @@ class VisionServoController:
 
         # Anti-chase gating: reject a distant (small) or teleporting detection
         # while tracking, so a gate leaving frame doesn't make us chase far gates.
+        # Size uses a Schmitt trigger (accept/reject thresholds) to stop boundary
+        # thrash. When re-acquiring (not had_recent) we don't gate, but seed the
+        # size lock for the frames that follow.
         accepted = det.found
         reject = ""
-        if det.found and had_recent:
-            if det.size_frac < c.min_gate_size:
-                accepted, reject = False, "small"
-            elif abs(det.u_err - self._last_u_err) > c.max_u_jump:
-                accepted, reject = False, "jump"
+        if det.found:
+            if had_recent:
+                lo = c.gate_size_reject if self._size_locked else c.gate_size_accept
+                size_ok = det.size_frac >= lo
+                self._size_locked = size_ok
+                if not size_ok:
+                    accepted, reject = False, "small"
+                elif abs(det.u_err - self._last_u_err) > c.max_u_jump:
+                    accepted, reject = False, "jump"
+            else:
+                self._size_locked = det.size_frac >= c.gate_size_accept
+        else:
+            self._size_locked = False
 
         if accepted:
             # Filtered PD derivative on u,v (dirty-derivative: low-pass then diff,
@@ -568,7 +592,6 @@ class VisionServoController:
             # gate LOW in frame (v_err>0) => we're too HIGH => descend => less thrust.
             # P on v + D on dv/dt so a growing vertical error is chased early.
             thrust = c.hover_cruise - (c.k_thrust_v * det.v_err + c.kd_v * dv_dt)
-            thrust = float(np.clip(thrust, c.min_thrust, c.max_thrust))
         else:
             # No usable gate. Coast+search, then GIVE UP: after search_timeout_s,
             # level + zero yaw + hold hover (a corkscrew off-course is worse).
@@ -583,7 +606,13 @@ class VisionServoController:
             else:                                    # give up: level + hold hover
                 des_roll, des_pitch, des_yaw = 0.0, 0.0, 0.0
                 thrust = c.hover_cruise
-            thrust = float(np.clip(thrust, c.min_thrust, c.max_thrust))
+
+        # Hard vertical safety net: |thrust - hover| <= thrust_dev_max, ALWAYS,
+        # regardless of branch/gain/sign (prevents the flight-4 thrust collapse).
+        # Also kept within [min_thrust, max_thrust].
+        lo_t = max(c.min_thrust, c.hover_cruise - c.thrust_dev_max)
+        hi_t = min(c.max_thrust, c.hover_cruise + c.thrust_dev_max)
+        thrust = float(np.clip(thrust, lo_t, hi_t))
 
         roll_n, pitch_n, yaw_n = self._attitude_rates(
             des_roll, des_pitch, des_yaw, gravity, gyro)

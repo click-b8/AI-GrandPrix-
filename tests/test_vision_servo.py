@@ -259,11 +259,32 @@ def test_lost_gate_coasts_then_searches():
 def test_rejects_small_gate_while_tracking():
     ctl = VisionServoController()
     ctl.command(make_frame(0.5, 0.5, size_frac=0.20), telem(), active_gate=0, now=100.0)
-    # a small distant gate right after (detected, but size < min_gate_size 0.04)
+    # a small distant gate right after (detected, but size < gate_size_reject 0.025)
     # -> rejected as "small", servo coasts
-    out = ctl.command(make_frame(0.5, 0.5, size_frac=0.03), telem(), active_gate=0, now=100.1)
+    out = ctl.command(make_frame(0.5, 0.5, size_frac=0.024), telem(), active_gate=0, now=100.1)
     assert out["_debug"]["found"] and not out["_debug"]["accepted"]
     assert out["_debug"]["reject"] == "small"
+
+
+def test_size_schmitt_no_thrash_at_boundary():
+    # Sizes hovering near the old 0.04 edge must NOT flip accept/reject once locked.
+    ctl = VisionServoController()
+    ctl.command(make_frame(0.5, 0.5, size_frac=0.06), telem(), active_gate=0, now=100.0)  # lock
+    for i, sz in enumerate([0.030, 0.041, 0.030, 0.041], start=1):
+        out = ctl.command(make_frame(0.5, 0.5, size_frac=sz), telem(),
+                          active_gate=0, now=100.0 + i * 0.05)
+        assert out["_debug"]["accepted"], f"thrashed at size {sz}"
+
+
+def test_thrust_clamped_to_hover_band():
+    cfg = ServoConfig()
+    # extreme low gate would drive thrust way down; clamp holds it within +/- dev
+    out = VisionServoController().command(
+        make_frame(0.5, 0.98, size_frac=0.16), telem(), active_gate=0)
+    assert out["throttle"] >= cfg.hover_cruise - cfg.thrust_dev_max - 1e-9
+    out2 = VisionServoController().command(
+        make_frame(0.5, 0.02, size_frac=0.16), telem(), active_gate=0)
+    assert out2["throttle"] <= cfg.hover_cruise + cfg.thrust_dev_max + 1e-9
 
 
 def test_rejects_teleport_jump_while_tracking():
