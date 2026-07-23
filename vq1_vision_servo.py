@@ -65,16 +65,18 @@ MAX_BODY_RATE = 12.0
 
 # ===========================================================================
 # ============================  CALIBRATE ME  ===============================
-# Every value below is a STARTING GUESS. None of it has seen the real sim.
-# Tune order on the sim box:
-#   1. Gate detection: run tools/vision_servo_dryrun.py on a REAL saved frame,
-#      adjust gate_hue_* / gate_sat_min / gate_val_min until the gate (and only
-#      the gate) is masked and the centroid sits on it.
+# Gate DETECTION thresholds are CALIBRATED (2026-07-22, vision_frame.png) -- see
+# the gate-detector block. The GAINS and hover fraction below are still STARTING
+# GUESSES and must be tuned on the sim box. Tune order:
+#   1. [DONE] Gate detection calibrated from a real frame. Re-verify per sim
+#      build with tools/vision_servo_dryrun.py --image <frame> --overlay out.png.
 #   2. hover_cruise: run `run_vq1.py --hover-probe 0.15/0.20/0.25/...`; set
 #      hover_cruise to the thrust where climb-rate ~= 0, then a hair BELOW it
 #      (the course descends).
 #   3. Attitude inner loop (kp_att/kd_att, cruise_pitch_deg): fly a single gate,
-#      watch it hold a stable forward lean without oscillating.
+#      watch it hold a stable forward lean without oscillating. NOTE: this whole
+#      inner loop assumes RATE control -- if tools/probe_rate_vs_angle.py finds
+#      the sim is ANGLE mode, replace it with a direct-angle (quaternion) command.
 #   4. Guidance gains (k_yaw/k_bank/k_thrust_v): widen until it centres gates
 #      briskly without overshoot.
 # ===========================================================================
@@ -85,17 +87,23 @@ class ServoConfig:
     img_h: int = 360
 
     # ---- gate detector (HSV thresholds; hue in degrees 0..360) ----
-    # DEFAULT GUESS: bright/saturated gate. Racing gates are usually emissive and
-    # strongly coloured. These select a hue band OR (if gate_use_brightness) any
-    # very bright, saturated region. REPLACE after looking at a real frame.
-    gate_hue_lo: float = 5.0      # orange/red band start
-    gate_hue_hi: float = 45.0     # orange/yellow band end
-    gate_sat_min: float = 0.45    # 0..1
-    gate_val_min: float = 0.35    # 0..1
-    gate_use_brightness_fallback: bool = True  # also accept near-white bright pixels
+    # CALIBRATED against a real v3385 FPV frame (vision_frame.png, 2026-07-22):
+    # gates are bright RED squares centred on hue ~0/360 (measured median ~359,
+    # p10..p90 = -10..+6 wrap-adjusted), sat median 0.53, val median 0.95 (min
+    # 0.67). This is a RED-WRAPAROUND band (lo>hi triggers the wrap branch in
+    # _mask). The dim red horizon grid (val ~0.38) is rejected by gate_val_min;
+    # the big cyan guidance tube (hue ~198) is far outside the band. The
+    # brightness fallback is OFF: the tube's white core and grey wireframe would
+    # otherwise be masked. Verified 0 tube / 0 wireframe contamination on-frame.
+    gate_hue_lo: float = 340.0    # RED wraparound band: hue >= 340 OR hue <= 20
+    gate_hue_hi: float = 20.0
+    gate_sat_min: float = 0.30    # 0..1 (gate sat min ~0.26; 0.30 with margin)
+    gate_val_min: float = 0.55    # 0..1 (rejects val~0.38 grid; gates are val>=0.67)
+    gate_use_brightness_fallback: bool = False  # OFF: would grab the cyan tube / wireframe
     bright_val_min: float = 0.85
     bright_sat_max: float = 0.25
-    min_area_frac: float = 0.0008  # reject blobs smaller than this frac of the image
+    min_area_frac: float = 0.0002  # ~46 px: keeps DISTANT gates (a far gate frame is
+                                   # ~30-90 px). Safe because the hue+val mask is clean.
     trim_iters: int = 2            # outlier-trim passes on the mask centroid
     trim_sigma: float = 2.0
 

@@ -21,12 +21,13 @@ from vq1_vision_servo import (  # noqa: E402
     rgb_to_hsv_arrays,
 )
 
-ORANGE = (255, 140, 0)   # passes the default gate colour band (hue ~33 deg)
+# Bright RED gate, matching the calibrated red-wraparound band (hue ~0, high V).
+RED_GATE = (230, 30, 30)
 LEVEL_G = (0.0, 0.0, 9.81)
 ZERO_GYRO = (0.0, 0.0, 0.0)
 
 
-def make_frame(cx_frac, cy_frac, size_frac=0.18, colour=ORANGE, w=640, h=360):
+def make_frame(cx_frac, cy_frac, size_frac=0.18, colour=RED_GATE, w=640, h=360):
     """Dark frame with one solid coloured square centred at (cx_frac, cy_frac)."""
     frame = np.full((h, w, 3), 25, dtype=np.uint8)  # dark grey background
     half = int(size_frac * h / 2)
@@ -44,10 +45,12 @@ def telem(gravity=LEVEL_G, gyro=ZERO_GYRO):
 # --------------------------------------------------------------------------
 # HSV + detector geometry
 # --------------------------------------------------------------------------
-def test_hsv_orange_in_band():
-    h, s, v = rgb_to_hsv_arrays(np.array([[ORANGE]], dtype=np.uint8))
-    assert 5.0 <= float(h[0, 0]) <= 45.0
-    assert float(s[0, 0]) > 0.45 and float(v[0, 0]) > 0.35
+def test_hsv_red_gate_in_band():
+    # Red gate hue sits at ~0/360 -> inside the wraparound band (>=340 or <=20).
+    h, s, v = rgb_to_hsv_arrays(np.array([[RED_GATE]], dtype=np.uint8))
+    hue = float(h[0, 0])
+    assert hue >= 340.0 or hue <= 20.0
+    assert float(s[0, 0]) > 0.30 and float(v[0, 0]) > 0.55
 
 
 def test_detect_centered():
