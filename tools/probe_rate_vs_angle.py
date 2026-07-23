@@ -36,6 +36,7 @@ NOT a timed attempt -- an authorised diagnostic. Keep --thrust modest.
     python tools/probe_rate_vs_angle.py --thrust 0.25 --duration 3.0
 """
 import argparse
+import math
 import os
 import statistics
 import sys
@@ -65,6 +66,34 @@ def integ_angle(samples, idx):
 
 def window(trace, t0, t1):
     return [s for s in trace if t0 <= s[0] <= t1]
+
+
+def classify(commanded, first_q, last_q, measured, scale_tol=(0.85, 1.15)):
+    """Pure classifier from the gyro summary stats on the commanded axis.
+
+    Returns a dict with verdict (RATE/ANGLE/INCONCLUSIVE), signed plant gain K =
+    measured/commanded, sign check, and the list of calibration issues. RATE vs
+    ANGLE is magnitude-based (sign-agnostic); sign + scale are reported SEPARATELY
+    so a sign-inverted, mis-scaled RATE response is never mislabelled 'no change'.
+    """
+    signed_gain = measured / commanded if commanded != 0 else float("nan")
+    sign_ok = (measured * commanded) > 0
+    holds = abs(last_q) > 0.5 * abs(first_q) and abs(measured) > 0.30 * abs(commanded)
+    decays = abs(first_q) > 0.15 and abs(last_q) < 0.4 * abs(first_q)
+    if decays and not holds:
+        verdict = "ANGLE"
+    elif holds:
+        verdict = "RATE"
+    else:
+        verdict = "INCONCLUSIVE"
+    issues = []
+    if verdict == "RATE":
+        if not sign_ok:
+            issues.append("SIGN INVERTED")
+        if not (scale_tol[0] <= abs(signed_gain) <= scale_tol[1]):
+            issues.append(f"SCALE {abs(signed_gain):.2f}x")
+    return {"verdict": verdict, "K": signed_gain, "sign_ok": sign_ok,
+            "holds": holds, "decays": decays, "issues": issues}
 
 
 def main():
@@ -151,41 +180,52 @@ def main():
     def gm(samples):
         return statistics.fmean(s[1 + idx] for s in samples) if samples else float("nan")
 
-    q = len(cmd) // 4
+    q = max(1, len(cmd) // 4)
     first_q = gm(cmd[:q])
     last_q = gm(cmd[-q:])
+    # STEADY measured rate: mean gyro over the last 75% of the window (skip the
+    # startup ramp). This is the signed number we calibrate against.
+    measured = gm(cmd[q:])
     peak = max((abs(s[1 + idx]) for s in cmd), default=0.0)
     base_g = gm(base) if base else 0.0
     ang = integ_angle(cmd, idx)
 
-    import math
-    print("\n================= RATE-vs-ANGLE RESULT =================")
-    print(f"axis={args.axis}  commanded rate={args.rate:+.3f} rad/s  ({len(cmd)} cmd samples, "
-          f"{len(base)} baseline)")
-    print(f"gyro[{args.axis}]  baseline_mean={base_g:+.3f}  first_quarter={first_q:+.3f}  "
-          f"last_quarter={last_q:+.3f}  peak={peak:.3f} rad/s")
-    print(f"integrated angle over window = {ang:+.3f} rad ({math.degrees(ang):+.1f} deg)")
+    commanded = args.rate
+    r = classify(commanded, first_q, last_q, measured)
+    K = r["K"]
 
-    cmd_mag = abs(args.rate)
-    holds = abs(last_q) > 0.5 * cmd_mag and abs(last_q) > 0.5 * abs(first_q)
-    decays = abs(first_q) > 0.15 and abs(last_q) < 0.4 * abs(first_q)
+    print("\n================= RATE-vs-ANGLE RESULT =================")
+    print(f"axis={args.axis}  ({len(cmd)} cmd samples, {len(base)} baseline)")
+    print(f"  commanded rate = {commanded:+.3f} rad/s   (what we put on the wire)")
+    print(f"  MEASURED  rate = {measured:+.3f} rad/s   (steady gyro mean)")
+    print(f"  first_quarter={first_q:+.3f}  last_quarter={last_q:+.3f}  peak={peak:.3f}  "
+          f"baseline={base_g:+.3f}")
+    print(f"  signed gain K = measured/commanded = {K:+.2f}   (K=+1 is a perfect follower)")
+    print(f"  integrated angle over window = {ang:+.3f} rad ({math.degrees(ang):+.1f} deg)")
+
     print("\nVERDICT:")
-    if holds and not decays:
-        print("  RATE control. gyro rises to ~command and HOLDS -> type_mask=128 body")
-        print("  rates are honoured as RATES. The vision servo's inner rate-PD is correct;")
-        print("  the RL policy's CTBR mapping is correct. No change needed.")
-    elif decays:
-        print("  ANGLE control. gyro spiked then DECAYED toward zero -> the body_*_rate")
-        print("  field is being tracked as an ANGLE setpoint, not a rate. ACTION:")
+    if r["verdict"] == "ANGLE":
+        print("  ANGLE control. |gyro| spiked then DECAYED toward zero -> the")
+        print("  body_*_rate field is tracked as an ANGLE setpoint, not a rate.")
         print("   - vision servo: send desired ANGLES via the quaternion (type_mask=0),")
-        print("     drop the gravity-PD inner loop (des_roll/des_pitch go straight to q).")
-        print("   - re-examine the RL policy scaling (trained on rates, fed as angles).")
+        print("     drop the gravity-PD inner loop.  - re-examine the RL CTBR mapping.")
+    elif r["verdict"] == "RATE":
+        if r["issues"]:
+            print(f"  RATE control, but MIS-CALIBRATED: {', '.join(r['issues'])}.")
+            print(f"    commanded {commanded:+.3f} -> measured {measured:+.3f} rad/s")
+            print(f"    per-axis plant gain  K[{args.axis}] = {K:+.2f}")
+            print(f"    correction: to achieve an intended rate R, send wire = R / K")
+            print(f"                = R * {1.0/K:+.3f}   (folds in sign + scale)")
+        else:
+            print(f"  RATE control, calibrated (K={K:+.2f} ~ +1). No correction "
+                  f"needed on {args.axis}.")
     else:
         print("  INCONCLUSIVE. Neither a clean hold nor a clean decay. Re-run with a")
-        print("  larger --rate or longer --duration, or check the drone wasn't already")
-        print("  lodged in geometry (needs a clean at-spawn GO).")
-    print(f"  (first_q={first_q:+.3f} last_q={last_q:+.3f} cmd={args.rate:+.3f} "
-          f"holds={holds} decays={decays})")
+        print("  larger --rate or longer --duration, or confirm a clean at-spawn GO.")
+
+    print(f"\n[SUMMARY] axis={args.axis} cmd={commanded:+.3f} measured={measured:+.3f} "
+          f"K={K:+.2f} sign={'OK' if r['sign_ok'] else 'INVERTED'} "
+          f"scale={abs(K):.2f}x verdict={r['verdict']}")
     print("========================================================")
     return 0
 
