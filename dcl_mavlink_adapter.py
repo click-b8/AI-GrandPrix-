@@ -86,7 +86,7 @@ def wire_body_rate(axis: str, command_norm: float) -> float:
 # --hover-probe diagnostic: after GO, hold a fixed thrust with zero body rates
 # for this long while logging vz, then cut thrust to 0. Used to bracket DCL's
 # hover-thrust fraction across separate races (vz ~= 0 => that thrust hovers).
-HOVER_PROBE_DURATION_S = 2.0
+HOVER_PROBE_DURATION_S = 3.0   # longer window -> more steady-state after the launch transient
 # v3385 has NO LOCAL_POSITION_NED, so vz is dead -> the hover probe reads IMU
 # VERTICAL ACCELERATION instead (accel + gravity estimate). |vert accel| below
 # this (m/s^2) reads as hover.
@@ -336,9 +336,8 @@ class SCUBALabMAVLinkAdapter:
         self.hover_probe = hover_probe
         self._probe_start_time = None
         self._probe_summary_logged = False
-        self._probe_vz_sum = 0.0
-        self._probe_vz_n = 0
-        self._probe_z0 = None
+        self._probe_verts = []        # per-frame vertical accel (+up); steady-state
+                                      # (last quarter) brackets hover, not the mean
         self.udp_host = udp_host
         self.udp_port = udp_port
         self.target_hz = target_hz
@@ -463,8 +462,7 @@ class SCUBALabMAVLinkAdapter:
         elapsed = now - self._probe_start_time
         if elapsed <= HOVER_PROBE_DURATION_S:
             vert = self._vertical_accel_up()
-            self._probe_vz_sum += vert
-            self._probe_vz_n += 1
+            self._probe_verts.append(vert)
             logger.info(
                 "[HOVER PROBE] t=%.3fs thrust=%.3f  vert_accel=%+.4f m/s^2 (+up)",
                 elapsed, self.hover_probe, vert,
@@ -473,17 +471,26 @@ class SCUBALabMAVLinkAdapter:
 
         if not self._probe_summary_logged:
             self._probe_summary_logged = True
-            mean_a = self._probe_vz_sum / max(self._probe_vz_n, 1)
-            if abs(mean_a) < HOVER_PROBE_ACCEL_EPS:
-                verdict = "~= HOVER (vert accel ~0) -- thrust ~= DCL hover fraction"
-            elif mean_a > 0:
+            verts = self._probe_verts
+            n = len(verts)
+            whole = sum(verts) / max(n, 1)
+            # STEADY-STATE = last quarter (matches the rate-probe). The whole-window
+            # mean is dominated by the launch transient (accelerating from rest);
+            # the last-quarter mean, after the drone approaches equilibrium, is what
+            # actually brackets hover.
+            q = max(1, n // 4)
+            steady = sum(verts[-q:]) / q
+            if abs(steady) < HOVER_PROBE_ACCEL_EPS:
+                verdict = "~= HOVER (steady vert accel ~0) -- thrust ~= DCL hover fraction"
+            elif steady > 0:
                 verdict = "CLIMBING (accel up) — thrust ABOVE hover"
             else:
                 verdict = "SINKING (accel down) — thrust BELOW hover"
             logger.info(
-                "[HOVER PROBE] DONE thrust=%.3f over %.1fs (n=%d): mean vert accel="
-                "%+.4f m/s^2 (+up)  ->  %s. Thrust now cut to 0.",
-                self.hover_probe, HOVER_PROBE_DURATION_S, self._probe_vz_n, mean_a, verdict,
+                "[HOVER PROBE] DONE thrust=%.3f over %.1fs (n=%d): "
+                "STEADY(last quarter)=%+.4f m/s^2  whole-window mean=%+.4f m/s^2 (+up)  "
+                "->  %s. Thrust now cut to 0.",
+                self.hover_probe, HOVER_PROBE_DURATION_S, n, steady, whole, verdict,
             )
         return zero
 

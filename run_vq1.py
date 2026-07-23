@@ -451,9 +451,9 @@ async def run(
             "[HOVER PROBE] DIAGNOSTIC MODE — model NOT loaded/ignored. After GO, "
             "commanding fixed thrust=%.3f with zero body rates for ~%.1fs, logging IMU "
             "VERTICAL ACCEL (+up); vz is dead on v3385. Read the per-frame vert_accel "
-            "and the DONE verdict. Bracket hover across separate races (0.30/0.40/0.50). "
-            "NOT for submission.",
-            hover_probe, 2.0,
+            "and the DONE verdict (STEADY last-quarter, not whole-window mean). Bracket "
+            "hover across separate races (0.30/0.40/0.50). NOT for submission.",
+            hover_probe, 3.0,
         )
     else:
         _check_model_path(CANONICAL_MODEL_PATH)
