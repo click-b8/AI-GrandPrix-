@@ -47,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pymavlink import mavutil  # noqa: E402
 
-from dcl_mavlink_adapter import DCLTimesync, MAX_BODY_RATE  # noqa: E402
+from dcl_mavlink_adapter import DCLTimesync, MAX_BODY_RATE, wire_body_rate  # noqa: E402
 from probe_position_target import Probe  # noqa: E402
 
 AXIS_IDX = {"roll": 0, "pitch": 1, "yaw": 2}  # gyro/body-rate component index
@@ -109,14 +109,24 @@ def main():
     ap.add_argument("--hz", type=float, default=250.0, help="command send rate")
     ap.add_argument("--go-timeout", type=float, default=180.0)
     ap.add_argument("--no-go-wait", action="store_true")
+    ap.add_argument("--corrected", action="store_true",
+                    help="treat --rate as the INTENDED rate and send it THROUGH the "
+                         "adapter's wire_body_rate (PLANT_RATE_CALIB). If the fix works, "
+                         "measured ~ intended and K ~ +1. Default (off) sends --rate RAW "
+                         "on the wire and should read the raw plant gain K ~ -2.5.")
     args = ap.parse_args()
 
     idx = AXIS_IDX[args.axis]
     norm = args.rate / MAX_BODY_RATE
     if abs(norm) > 1.0:
         ap.error(f"--rate {args.rate} exceeds MAX_BODY_RATE {MAX_BODY_RATE}")
-    print(f"[rate-probe] axis={args.axis} rate={args.rate} rad/s (norm {norm:+.4f}) "
-          f"thrust={args.thrust} duration={args.duration}s")
+    # RAW: put --rate straight on the wire (measures the plant, K~-2.5).
+    # CORRECTED: --rate is the intended rate; wire = intended/K via the SAME
+    # wire_body_rate the adapter uses, so measured~intended and K~+1 if the fix works.
+    wire_val = wire_body_rate(args.axis, norm) if args.corrected else args.rate
+    mode = "CORRECTED (through adapter wire_body_rate)" if args.corrected else "RAW"
+    print(f"[rate-probe] {mode}: axis={args.axis} intended/commanded={args.rate} rad/s -> "
+          f"wire={wire_val:+.4f} rad/s  thrust={args.thrust} duration={args.duration}s")
 
     conn = mavutil.mavlink_connection(f"udpin:0.0.0.0:{args.port}")
     conn.wait_heartbeat()
@@ -142,7 +152,7 @@ def main():
 
     boot0 = int(time.time() * 1000)
     rates = [0.0, 0.0, 0.0]
-    rates[idx] = args.rate
+    rates[idx] = wire_val   # RAW: == args.rate; CORRECTED: == intended / K_axis
 
     def send(rvec, thrust):
         conn.mav.set_attitude_target_send(
@@ -156,7 +166,8 @@ def main():
 
     # command window: constant rate on the chosen axis
     t_cmd0 = time.time()
-    print(f"[rate-probe] COMMAND {args.duration}s: {args.axis}_rate={args.rate} rad/s ...")
+    print(f"[rate-probe] COMMAND {args.duration}s: {args.axis} wire={wire_val:+.4f} rad/s "
+          f"(intended {args.rate:+.3f}) ...")
     dt = 1.0 / args.hz
     while time.time() - t_cmd0 < args.duration:
         send(rates, args.thrust)
@@ -195,9 +206,11 @@ def main():
     K = r["K"]
 
     print("\n================= RATE-vs-ANGLE RESULT =================")
-    print(f"axis={args.axis}  ({len(cmd)} cmd samples, {len(base)} baseline)")
-    print(f"  commanded rate = {commanded:+.3f} rad/s   (what we put on the wire)")
-    print(f"  MEASURED  rate = {measured:+.3f} rad/s   (steady gyro mean)")
+    print(f"axis={args.axis}  mode={'CORRECTED' if args.corrected else 'RAW'}  "
+          f"({len(cmd)} cmd samples, {len(base)} baseline)")
+    print(f"  intended/commanded = {commanded:+.3f} rad/s")
+    print(f"  wire sent          = {wire_val:+.3f} rad/s")
+    print(f"  MEASURED  rate     = {measured:+.3f} rad/s   (steady gyro mean)")
     print(f"  first_quarter={first_q:+.3f}  last_quarter={last_q:+.3f}  peak={peak:.3f}  "
           f"baseline={base_g:+.3f}")
     print(f"  signed gain K = measured/commanded = {K:+.2f}   (K=+1 is a perfect follower)")
@@ -223,7 +236,8 @@ def main():
         print("  INCONCLUSIVE. Neither a clean hold nor a clean decay. Re-run with a")
         print("  larger --rate or longer --duration, or confirm a clean at-spawn GO.")
 
-    print(f"\n[SUMMARY] axis={args.axis} cmd={commanded:+.3f} measured={measured:+.3f} "
+    print(f"\n[SUMMARY] axis={args.axis} mode={'CORRECTED' if args.corrected else 'RAW'} "
+          f"intended={commanded:+.3f} wire={wire_val:+.3f} measured={measured:+.3f} "
           f"K={K:+.2f} sign={'OK' if r['sign_ok'] else 'INVERTED'} "
           f"scale={abs(K):.2f}x verdict={r['verdict']}")
     print("========================================================")
