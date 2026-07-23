@@ -43,6 +43,7 @@ from queue import Empty, Queue
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUN_VQ1 = os.path.join(HERE, "run_vq1.py")
+WAYPOINT = os.path.join(HERE, "vq1_waypoint.py")
 DEFAULT_MODEL = os.path.join(HERE, "models_release", "aigp_distill_final.zip")
 
 try:
@@ -51,9 +52,14 @@ try:
 except Exception:
     _DEFAULT_NUM_GATES = 8                            # fallback if track import fails
 
-# run_vq1.py log-line patterns (logger emits INFO to stderr).
-RE_GO = re.compile(r"\[Race\] GO")
+# Log-line patterns. run_vq1.py (model / vision-servo) emits INFO to stderr;
+# vq1_waypoint.py (waypoint mode) prints its own [wp] lines to stdout, which we
+# also route to the parsed stream. GO / gate-progress / outcome are matched for
+# both so one classifier serves every controller.
+RE_GO = re.compile(r"\[Race\] GO|\[wp\] GO")
 RE_STATUS = re.compile(r"active_gate=(-?\d+).*?race_finish_ns=(-?\d+)")
+RE_WP_GATE = re.compile(r"\[wp\] active_gate \d+ -> (\d+)")
+RE_WP_OUTCOME = re.compile(r"\[wp\] OUTCOME: (\w+)")
 
 _stop_requested = False
 
@@ -120,24 +126,32 @@ def _write_record(path: str, record: dict):
 
 def run_one_attempt(attempt_id: int, args) -> dict:
     """Launch one run_vq1.py attempt, watch its telemetry, classify the outcome."""
-    cmd = [sys.executable, "-u", RUN_VQ1,
-           "--port", str(args.port), "--vision-port", str(args.vision_port)]
-    if args.host:
-        cmd += ["--host", args.host]
-    if args.control_mode:
-        cmd += ["--control-mode", args.control_mode]
-    if args.device:
-        cmd += ["--device", args.device]
+    if args.controller == "waypoint":
+        # Separate entry point: sends SET_POSITION_TARGET_LOCAL_NED, no model/vision.
+        cmd = [sys.executable, "-u", WAYPOINT, "--port", str(args.port),
+               "--axes", args.axes, "--mask", args.mask, "--frame", args.frame]
+    else:
+        cmd = [sys.executable, "-u", RUN_VQ1,
+               "--port", str(args.port), "--vision-port", str(args.vision_port),
+               "--controller", args.controller]
+        if args.host:
+            cmd += ["--host", args.host]
+        if args.control_mode:
+            cmd += ["--control-mode", args.control_mode]
+        if args.device:
+            cmd += ["--device", args.device]
 
     start_wall = time.time()
     start_ts = _utcnow()
+    # Merge stdout+stderr: run_vq1 logs to stderr, vq1_waypoint prints [wp] lines
+    # to stdout; one combined stream feeds the single classifier.
     proc = subprocess.Popen(
-        cmd, cwd=HERE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        cmd, cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1,
         creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
     )
     q: "Queue[str]" = Queue()
-    threading.Thread(target=_reader_thread, args=(proc.stderr, q), daemon=True).start()
+    threading.Thread(target=_reader_thread, args=(proc.stdout, q), daemon=True).start()
 
     go_seen = False
     go_wall = None
@@ -184,6 +198,21 @@ def run_one_attempt(attempt_id: int, args) -> dict:
                 race_finish_ns = finish
                 outcome, note = "COMPLETED", "race_finish_ns > 0"
                 break
+        # waypoint mode (vq1_waypoint.py) progress + self-classified outcome
+        mg = RE_WP_GATE.search(line)
+        if mg:
+            max_gate = max(max_gate, int(mg.group(1)))
+        mo = RE_WP_OUTCOME.search(line)
+        if mo:
+            verdict = mo.group(1).upper()
+            if verdict == "COMPLETED":
+                race_finish_ns = max(race_finish_ns, 1)
+                outcome, note = "COMPLETED", "waypoint OUTCOME COMPLETED"
+            elif verdict == "TIMEOUT":
+                outcome, note = "TIMEOUT", "waypoint OUTCOME TIMEOUT"
+            else:  # STALLED / other
+                outcome, note = "FAILED", f"waypoint OUTCOME {verdict}"
+            break
 
     _kill_tree(proc)
     return {
@@ -224,6 +253,19 @@ def main():
                    help="Gates in the course; defaults to len(track.RACE_TRACK). "
                         "Completion is confirmed by race_finish_ns from the sim; "
                         "this only sizes the cross-check + histogram.")
+    p.add_argument("--controller", default="model",
+                   choices=["model", "vision-servo", "waypoint"],
+                   help="model/vision-servo -> run_vq1.py --controller <c>; "
+                        "waypoint -> vq1_waypoint.py (SET_POSITION_TARGET_LOCAL_NED; "
+                        "use ONLY if tools/probe_position_target.py confirmed the sim "
+                        "honours position targets).")
+    # waypoint passthrough (vq1_waypoint.py); ignored for model/vision-servo.
+    p.add_argument("--axes", default="world", choices=["world", "world_negN", "spawn_fwd"],
+                   help="waypoint mode: UE->NED axis mapping the probe validated")
+    p.add_argument("--mask", default="pos", choices=["pos", "posvel"],
+                   help="waypoint mode: type_mask that produced motion in the probe")
+    p.add_argument("--frame", default="local", choices=["local", "offset", "body"],
+                   help="waypoint mode: coordinate_frame that produced motion")
     # run_vq1.py passthrough
     p.add_argument("--host", default=None)
     p.add_argument("--port", type=int, default=14550)
