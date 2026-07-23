@@ -146,19 +146,21 @@ class ServoConfig:
     k_bank: float = 1.0               # desired roll ANGLE (rad) per unit control-u (0.45->1.0)
     max_bank_deg: float = 35.0
     k_yaw: float = 0.15               # nose ALIGNMENT only, not the correction (0.70->0.15)
-    hover_cruise: float = 0.30        # 0.32->0.30 to SLOW the approach via thrust (not pitch).
-                                      # Still above the ~0.27 rest hover so it won't sink; the
-                                      # lower thrust means a smaller forward component off the
-                                      # -18 deg tilt -> gentler approach, wider correction window.
-    k_thrust_v: float = 0.06          # thrust change per unit v_err. 0.027 too weak (flight 3
-                                      # passed below), 0.15 DIVERGED (flight 4: positive
-                                      # feedback collapsed thrust to 0.134). 0.06 splits them.
+    hover_cruise: float = 0.29        # slightly BELOW cruise-hover so the DEFAULT trajectory
+                                      # descends gently (the whole course drops 26 m and the
+                                      # drone starts above gate 1), instead of needing active
+                                      # descent at every gate. Still above rest hover ~0.27.
+    k_thrust_v: float = 0.10          # thrust per unit v_err. 0.027 too weak (flight 3 passed
+                                      # below), 0.15 DIVERGED (flight 4), 0.06 saturated the
+                                      # clamp (flight 8 flew over gate 1). 0.10 uses the wider
+                                      # band early instead of ramping into it.
     min_thrust: float = 0.05
     max_thrust: float = 0.60
     # Hard clamp on |thrust - hover_cruise|. The vertical channel must NEVER be
-    # able to collapse the flight regardless of gain or sign (flight 4 ran thrust
-    # to 0.134 via positive feedback). Permanent safety net, keep it.
-    thrust_dev_max: float = 0.06
+    # able to collapse the flight regardless of gain/sign (flight 4 ran to 0.134).
+    # 0.06->0.12: flight 8 pinned the floor with v still growing = too little
+    # descent authority. Wider band gives it; the clamp still blocks a collapse.
+    thrust_dev_max: float = 0.12
 
     # ---- PD derivative on the vision error (react to the error GROWING) ----
     # Flight 3: u and v both ramped ~linearly (0.02->0.82) and P-only was always
