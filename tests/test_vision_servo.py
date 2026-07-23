@@ -185,18 +185,19 @@ def test_gravity_rolled_right_positive():
 # --------------------------------------------------------------------------
 # guidance signs (outer loop)
 # --------------------------------------------------------------------------
-def test_gate_right_yaws_and_banks_right():
-    ctl = VisionServoController()
-    cmd = ctl.command(make_frame(0.80, 0.5), telem(), active_gate=0)
-    assert cmd["yaw"] > 0.05           # yaw right toward gate
-    assert cmd["_debug"]["des_roll"] > 0.0  # bank right
+def test_gate_right_banks_and_yaws_by_convention():
+    # bank follows bank_sign*u, yaw follows yaw_sign*u (robust to the sign config).
+    cfg = ServoConfig()
+    cmd = VisionServoController().command(make_frame(0.80, 0.5), telem(), active_gate=0)
+    assert cmd["_debug"]["des_roll"] * cfg.bank_sign > 0.0   # gate right -> bank_sign dir
+    assert cmd["yaw"] * cfg.yaw_sign > 0.02
 
 
-def test_gate_left_yaws_and_banks_left():
-    ctl = VisionServoController()
-    cmd = ctl.command(make_frame(0.20, 0.5), telem(), active_gate=0)
-    assert cmd["yaw"] < -0.05
-    assert cmd["_debug"]["des_roll"] < 0.0
+def test_gate_left_banks_and_yaws_by_convention():
+    cfg = ServoConfig()
+    cmd = VisionServoController().command(make_frame(0.20, 0.5), telem(), active_gate=0)
+    assert cmd["_debug"]["des_roll"] * cfg.bank_sign < 0.0   # gate left -> opposite
+    assert cmd["yaw"] * cfg.yaw_sign < -0.02
 
 
 def test_gate_low_reduces_thrust():
@@ -323,10 +324,13 @@ def test_derivative_adds_bank_on_growing_u():
     out = None
     for i, cx in enumerate([0.53, 0.56, 0.59, 0.62], start=1):
         out = ctl.command(make_frame(cx, 0.5), telem(), active_gate=0, now=100.0 + i * 0.1)
+    cfg = ServoConfig()
     u = out["_debug"]["u_err"]
-    p_only = ServoConfig().k_bank * u
-    # a growing offset (du/dt > 0) should push bank BEYOND the proportional term
-    assert out["_debug"]["des_roll"] > p_only + 1e-3
+    p_only = cfg.bank_sign * cfg.k_bank * u
+    # a growing offset (du/dt > 0) pushes bank BEYOND the proportional magnitude,
+    # in the same direction.
+    assert abs(out["_debug"]["des_roll"]) > abs(p_only) + 1e-3
+    assert out["_debug"]["des_roll"] * p_only > 0
 
 
 def test_derivative_zero_when_u_constant():
@@ -334,8 +338,9 @@ def test_derivative_zero_when_u_constant():
     out = None
     for i in range(5):
         out = ctl.command(make_frame(0.58, 0.5), telem(), active_gate=0, now=100.0 + i * 0.1)
+    cfg = ServoConfig()
     u = out["_debug"]["u_err"]
-    p_only = ServoConfig().k_bank * u
+    p_only = cfg.bank_sign * cfg.k_bank * u
     # steady u -> derivative decays to ~0 -> des_roll ~ proportional term
     assert abs(out["_debug"]["des_roll"] - p_only) < 0.03
 

@@ -144,6 +144,15 @@ class ServoConfig:
     # tilted thrust vector) -- NOT pitch, which is the same axis holding attitude.
     cruise_pitch_deg: float = -18.0   # forward lean; ~matches spawn so the loop sits quiet
     k_bank: float = 1.0               # desired roll ANGLE (rad) per unit u_err (0.45->1.0)
+    # Guidance sign. Flight 6: u ran away POSITIVE while bank commanded POSITIVE
+    # (drone LEFT of gate, banking RIGHT, drifting further LEFT) -- the actuator is
+    # verified K=+1, so this is an inverted GUIDANCE sign. bank_sign flips the WHOLE
+    # bank command (P and D together, so the derivative doesn't fight the flip).
+    # TEST VALUE -1.0 for the decisive one-race check: if u now CLOSES the bank
+    # convention was inverted (keep -1, check yaw too); if u runs away IDENTICALLY
+    # bank isn't translating at all -> revert to +1 and look elsewhere.
+    bank_sign: float = -1.0
+    yaw_sign: float = 1.0             # left as-is; flip after bank is confirmed
     max_bank_deg: float = 35.0
     k_yaw: float = 0.15               # nose ALIGNMENT only, not the correction (0.70->0.15)
     hover_cruise: float = 0.30        # 0.32->0.30 to SLOW the approach via thrust (not pitch).
@@ -602,10 +611,11 @@ class VisionServoController:
             self._last_size = det.size_frac
 
             # BANK translates: P on u + D on du/dt (react to the offset GROWING).
-            des_roll = float(np.clip(c.k_bank * det.u_err + c.kd_u * du_dt,
+            # bank_sign flips the whole command (see config) for the flight-6 test.
+            des_roll = float(np.clip(c.bank_sign * (c.k_bank * det.u_err + c.kd_u * du_dt),
                                      -math.radians(c.max_bank_deg),
                                      math.radians(c.max_bank_deg)))
-            des_yaw = float(np.clip(c.k_yaw * det.u_err, -1.0, 1.0))  # nose only, P
+            des_yaw = float(np.clip(c.yaw_sign * c.k_yaw * det.u_err, -1.0, 1.0))  # nose only, P
             des_pitch = cruise_pitch
             # gate LOW in frame (v_err>0) => we're too HIGH => descend => less thrust.
             # P on v + D on dv/dt so a growing vertical error is chased early.
