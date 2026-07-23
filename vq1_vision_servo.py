@@ -140,9 +140,21 @@ class ServoConfig:
                                       # + forward drag, so cruise needs more. 0.35 flew well at
                                       # rest toward gate 1; 0.32 splits it. Too-high still
                                       # threads a gate; sinking cannot.
-    k_thrust_v: float = 0.027         # thrust change per unit v_err (good in flight; unchanged)
+    k_thrust_v: float = 0.15          # thrust change per unit v_err (0.027->0.15, 5x). Flight 3
+                                      # passed BELOW the gate: at v~0.6 the old gain moved thrust
+                                      # only ~2% -- nowhere near enough to descend in ~2s.
     min_thrust: float = 0.05
     max_thrust: float = 0.60
+
+    # ---- PD derivative on the vision error (react to the error GROWING) ----
+    # Flight 3: u and v both ramped ~linearly (0.02->0.82) and P-only was always
+    # behind. Add a derivative on u (-> bank) and v (-> thrust) so a growing error
+    # is corrected early. Derivative is FILTERED (dirty-derivative, deriv_tau_s):
+    # vision frames update slower than the control loop, so a raw frame-to-frame
+    # d/dt would be spiky/zero. kd_* ~0.4x the matching P gain.
+    kd_u: float = 0.4                 # bank derivative gain (on du/dt), ~0.4 * k_bank
+    kd_v: float = 0.06                # thrust derivative gain (on dv/dt), ~0.4 * k_thrust_v
+    deriv_tau_s: float = 0.15         # derivative low-pass time constant (s)
 
     # ---- attitude stabiliser (inner loop, from IMU) ----
     kp_att: float = 3.0               # rad/s of body rate per rad angle error (1.3->3.0 so
@@ -169,6 +181,9 @@ class ServoConfig:
     lost_thrust_scale: float = 1.0    # NEVER below hover while blind. Flight 2 sank: 0.9 x
                                       # 0.265 = 0.239 was BELOW hover. Not-tracking thrust =
                                       # hover_cruise exactly (raise >1.0 if it still sinks).
+    search_timeout_s: float = 2.0     # after this long with NO gate, stop searching: level
+                                      # wings, zero yaw, level pitch, hold hover. A stationary
+                                      # drone that can still see beats corkscrewing off-course.
 
     # bookkeeping (not a knob)
     name: str = "vq1-vision-servo-v0"
@@ -448,6 +463,9 @@ class VisionServoController:
         self._last_u_err = 0.0
         self._last_v_err = 0.0
         self._last_size = 0.0     # last ACCEPTED detection (u,v,size) for continuity
+        self._u_filt = 0.0
+        self._v_filt = 0.0        # low-pass state for the filtered PD derivative
+        self._last_cmd_t = -1e9
         self._active_gate_prev = None
         self._t0 = None
         self._last_log_t = -1e9   # throttle for the per-frame tuning log
@@ -459,6 +477,9 @@ class VisionServoController:
         self._last_u_err = 0.0
         self._last_v_err = 0.0
         self._last_size = 0.0
+        self._u_filt = 0.0
+        self._v_filt = 0.0
+        self._last_cmd_t = -1e9
         self._t0 = None
         logger.info("[servo] reset for fresh race")
 
@@ -520,31 +541,49 @@ class VisionServoController:
                 accepted, reject = False, "jump"
 
         if accepted:
+            # Filtered PD derivative on u,v (dirty-derivative: low-pass then diff,
+            # robust to the vision stream updating slower than the control loop).
+            if not had_recent:                       # fresh lock -> seed, no D spike
+                self._u_filt, self._v_filt = det.u_err, det.v_err
+                du_dt = dv_dt = 0.0
+            else:
+                dt = min(max(now - self._last_cmd_t, 1e-3), 0.5)
+                a = dt / (c.deriv_tau_s + dt)
+                self._u_filt += a * (det.u_err - self._u_filt)
+                self._v_filt += a * (det.v_err - self._v_filt)
+                du_dt = (det.u_err - self._u_filt) / c.deriv_tau_s
+                dv_dt = (det.v_err - self._v_filt) / c.deriv_tau_s
+            self._last_cmd_t = now
             self._last_seen_t = now
             self._last_u_err = det.u_err
             self._last_v_err = det.v_err
             self._last_size = det.size_frac
 
-            des_roll = float(np.clip(c.k_bank * det.u_err,
+            # BANK translates: P on u + D on du/dt (react to the offset GROWING).
+            des_roll = float(np.clip(c.k_bank * det.u_err + c.kd_u * du_dt,
                                      -math.radians(c.max_bank_deg),
                                      math.radians(c.max_bank_deg)))
-            des_yaw = float(np.clip(c.k_yaw * det.u_err, -1.0, 1.0))
+            des_yaw = float(np.clip(c.k_yaw * det.u_err, -1.0, 1.0))  # nose only, P
             des_pitch = cruise_pitch
-            # gate LOW in frame (v_err>0) => we're too HIGH => descend => less thrust
-            thrust = c.hover_cruise - c.k_thrust_v * det.v_err
+            # gate LOW in frame (v_err>0) => we're too HIGH => descend => less thrust.
+            # P on v + D on dv/dt so a growing vertical error is chased early.
+            thrust = c.hover_cruise - (c.k_thrust_v * det.v_err + c.kd_v * dv_dt)
             thrust = float(np.clip(thrust, c.min_thrust, c.max_thrust))
         else:
-            # No usable gate. Briefly coast level+forward (it leaves frame as we
-            # pass through / a rejected far gate), then gently yaw toward last-seen.
+            # No usable gate. Coast+search, then GIVE UP: after search_timeout_s,
+            # level + zero yaw + hold hover (a corkscrew off-course is worse).
             dt_lost = now - self._last_seen_t
-            des_roll = 0.0
-            des_pitch = cruise_pitch
-            if dt_lost <= c.reacquire_s:
-                des_yaw = 0.0
-            else:
+            if dt_lost <= c.reacquire_s:             # coast straight, reacquire
+                des_roll, des_pitch, des_yaw = 0.0, cruise_pitch, 0.0
+                thrust = c.hover_cruise * c.lost_thrust_scale
+            elif dt_lost <= c.search_timeout_s:      # gentle yaw toward last-seen side
+                des_roll, des_pitch = 0.0, cruise_pitch
                 des_yaw = math.copysign(c.search_yaw, self._last_u_err or 1.0)
-            thrust = float(np.clip(c.hover_cruise * c.lost_thrust_scale,
-                                   c.min_thrust, c.max_thrust))
+                thrust = c.hover_cruise * c.lost_thrust_scale
+            else:                                    # give up: level + hold hover
+                des_roll, des_pitch, des_yaw = 0.0, 0.0, 0.0
+                thrust = c.hover_cruise
+            thrust = float(np.clip(thrust, c.min_thrust, c.max_thrust))
 
         roll_n, pitch_n, yaw_n = self._attitude_rates(
             des_roll, des_pitch, des_yaw, gravity, gyro)

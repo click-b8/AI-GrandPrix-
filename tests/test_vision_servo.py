@@ -295,6 +295,44 @@ def test_continuity_prefers_last_tracked_blob():
     assert out["_debug"]["accepted"] and out["_debug"]["u_err"] < -0.1
 
 
+# --- PD derivative on the vision error ---
+def test_derivative_adds_bank_on_growing_u():
+    ctl = VisionServoController()
+    ctl.command(make_frame(0.50, 0.5), telem(), active_gate=0, now=100.0)
+    out = None
+    for i, cx in enumerate([0.53, 0.56, 0.59, 0.62], start=1):
+        out = ctl.command(make_frame(cx, 0.5), telem(), active_gate=0, now=100.0 + i * 0.1)
+    u = out["_debug"]["u_err"]
+    p_only = ServoConfig().k_bank * u
+    # a growing offset (du/dt > 0) should push bank BEYOND the proportional term
+    assert out["_debug"]["des_roll"] > p_only + 1e-3
+
+
+def test_derivative_zero_when_u_constant():
+    ctl = VisionServoController()
+    out = None
+    for i in range(5):
+        out = ctl.command(make_frame(0.58, 0.5), telem(), active_gate=0, now=100.0 + i * 0.1)
+    u = out["_debug"]["u_err"]
+    p_only = ServoConfig().k_bank * u
+    # steady u -> derivative decays to ~0 -> des_roll ~ proportional term
+    assert abs(out["_debug"]["des_roll"] - p_only) < 0.03
+
+
+# --- search timeout (anti-corkscrew) ---
+def test_search_timeout_levels_and_holds():
+    cfg = ServoConfig()
+    ctl = VisionServoController()
+    ctl.command(make_frame(0.80, 0.5), telem(), active_gate=0, now=100.0)  # lock right gate
+    dark = np.full((360, 640, 3), 20, dtype=np.uint8)
+    searching = ctl.command(dark, telem(), active_gate=0, now=101.5)   # within search window
+    assert abs(searching["_debug"]["des_yaw"]) > 0.0
+    giveup = ctl.command(dark, telem(), active_gate=0, now=103.0)      # past search_timeout_s
+    assert giveup["_debug"]["des_yaw"] == 0.0
+    assert giveup["_debug"]["des_pitch"] == 0.0                        # level pitch (hold)
+    assert abs(giveup["throttle"] - cfg.hover_cruise) < 1e-9           # hover, not below
+
+
 def test_command_contract_keys_and_ranges():
     cmd = VisionServoController().command(make_frame(0.6, 0.4), telem(), active_gate=1)
     for k in ("throttle", "roll", "pitch", "yaw"):
