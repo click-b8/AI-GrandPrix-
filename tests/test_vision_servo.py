@@ -354,6 +354,31 @@ def test_search_timeout_levels_and_holds():
     assert abs(giveup["throttle"] - cfg.hover_cruise) < 1e-9           # hover, not below
 
 
+# --- cruise_pitch vs spawn attitude (flight-5 guard) ---
+def test_cruise_pitch_matches_spawn_quiet_loop():
+    # cruise_pitch -18 ~ spawn -17.8 -> near-zero pitch command (loop sits quiet),
+    # NOT the persistent +0.5 rad/s nose-up flight 5 saw at cruise_pitch -8.
+    g = (2.999, 0.003, 9.340)  # ~ -17.8 deg pitch
+    cmd = VisionServoController().command(make_frame(0.5, 0.5), telem(gravity=g), active_gate=0)
+    assert abs(cmd["pitch"] * 12.0) < 0.15
+
+
+def test_cruise_pitch_guard_warns_when_far_from_spawn(caplog):
+    import logging
+    cfg = ServoConfig()
+    cfg.cruise_pitch_deg = -8.0
+    with caplog.at_level(logging.WARNING):
+        VisionServoController(cfg)
+    assert any("cruise_pitch" in r.message and "SPAWN" in r.message for r in caplog.records)
+
+
+def test_cruise_pitch_guard_silent_on_default(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        VisionServoController()  # default -18 ~ spawn -17.8
+    assert not any("cruise_pitch" in r.message for r in caplog.records)
+
+
 def test_command_contract_keys_and_ranges():
     cmd = VisionServoController().command(make_frame(0.6, 0.4), telem(), active_gate=1)
     for k in ("throttle", "roll", "pitch", "yaw"):

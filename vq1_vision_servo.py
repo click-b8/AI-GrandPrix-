@@ -62,6 +62,12 @@ logger = logging.getLogger("vq1_vision_servo")
 # Must match dcl_mavlink_adapter.MAX_BODY_RATE — normalised rate 1.0 == this rad/s.
 MAX_BODY_RATE = 12.0
 
+# Measured resting/spawn body pitch on v3385 (nose-down). cruise_pitch_deg must
+# stay near this or the attitude loop holds a constant pitch correction and the
+# drone climbs/backs up instead of flying the course (flight 5). Guard below.
+SPAWN_PITCH_DEG = -17.8
+CRUISE_PITCH_TOL_DEG = 5.0
+
 
 # ===========================================================================
 # ============================  CALIBRATE ME  ===============================
@@ -131,18 +137,19 @@ class ServoConfig:
     # passed BESIDE gate 1. Only BANK translates. So bank does the correction; yaw
     # only aligns the nose. Geometry: ~0.9 m over ~2 s ~ 0.45 m/s^2 ~ 2.6 deg bank;
     # k_bank*u at u=0.05 must give ~0.045 rad -> k_bank ~ 1.0.
-    # cruise_pitch -18 -> -8 (flight 4): HIGHEST-leverage fix. VQ1 is completion,
-    # not lap time. Halving forward speed ~doubles the correction window (~2s->~4s),
-    # which makes every existing gain adequate instead of always-too-late.
-    cruise_pitch_deg: float = -8.0    # forward lean held in cruise (nose-down neg)
+    # cruise_pitch MUST match the ~-17.8 deg spawn attitude, or the attitude loop
+    # holds a CONSTANT pitch correction (flight 5: -8 made it command +10 deg
+    # nose-up forever -> climbed and backed up instead of flying the course). To
+    # slow the approach, lower hover_cruise (thrust drives forward speed via the
+    # tilted thrust vector) -- NOT pitch, which is the same axis holding attitude.
+    cruise_pitch_deg: float = -18.0   # forward lean; ~matches spawn so the loop sits quiet
     k_bank: float = 1.0               # desired roll ANGLE (rad) per unit u_err (0.45->1.0)
     max_bank_deg: float = 35.0
     k_yaw: float = 0.15               # nose ALIGNMENT only, not the correction (0.70->0.15)
-    hover_cruise: float = 0.32        # hover-IN-CRUISE. Rest hover ~0.27, but at -18 deg lean
-                                      # the thrust vector tilts (vertical ~cos18=0.95 of total)
-                                      # + forward drag, so cruise needs more. 0.35 flew well at
-                                      # rest toward gate 1; 0.32 splits it. Too-high still
-                                      # threads a gate; sinking cannot.
+    hover_cruise: float = 0.30        # 0.32->0.30 to SLOW the approach via thrust (not pitch).
+                                      # Still above the ~0.27 rest hover so it won't sink; the
+                                      # lower thrust means a smaller forward component off the
+                                      # -18 deg tilt -> gentler approach, wider correction window.
     k_thrust_v: float = 0.06          # thrust change per unit v_err. 0.027 too weak (flight 3
                                       # passed below), 0.15 DIVERGED (flight 4: positive
                                       # feedback collapsed thrust to 0.134). 0.06 splits them.
@@ -468,6 +475,17 @@ class VisionServoController:
 
     def __init__(self, cfg: ServoConfig | None = None):
         self.cfg = cfg or ServoConfig()
+        # Loud guard: cruise_pitch far from the spawn attitude makes the attitude
+        # loop hold a constant pitch correction (flight-5 class error). Impossible
+        # to make silently now.
+        _dp = self.cfg.cruise_pitch_deg - SPAWN_PITCH_DEG
+        if abs(_dp) > CRUISE_PITCH_TOL_DEG:
+            logger.warning(
+                "[servo] *** cruise_pitch_deg=%.1f is %+.1f deg from the ~%.1f deg "
+                "SPAWN attitude -- the attitude loop will hold a CONSTANT ~%+.1f deg "
+                "pitch correction (climb + back up, NOT fly the course). Set "
+                "cruise_pitch_deg near %.1f. ***",
+                self.cfg.cruise_pitch_deg, _dp, SPAWN_PITCH_DEG, _dp, SPAWN_PITCH_DEG)
         self.detector = GateDetector(self.cfg)
         self.tube = TubeDetector(self.cfg)   # measurement only; not yet in command()
         self._last_seen_t = -1e9
