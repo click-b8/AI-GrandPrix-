@@ -125,15 +125,16 @@ class ServoConfig:
     tube_min_band_frac: float = 0.004      # min masked frac of a band to trust its centre
 
     # ---- guidance (outer loop, from vision) ----
-    # Gains cut ~4.5x from the original guesses for a sluggish-but-stable first
-    # flight (2026-07-23). Widen once it holds a gate without oscillating.
+    # First flight (2026-07-23) showed pitch/thrust good but LATERAL control way
+    # too weak: u drifted 0.02 -> 0.9 and the gate left frame. k_bank/k_yaw raised
+    # ~3.5x from the sluggish first cut; pitch/thrust gains left alone.
     cruise_pitch_deg: float = -18.0   # forward lean held in cruise (nose-down neg)
-    k_bank: float = 0.13              # desired roll angle (rad) per unit u_err (was 0.60)
+    k_bank: float = 0.45              # desired roll angle (rad) per unit u_err (0.13->0.45)
     max_bank_deg: float = 35.0
-    k_yaw: float = 0.20               # desired yaw RATE (normalised) per unit u_err (was 0.9)
+    k_yaw: float = 0.70               # desired yaw RATE (normalised) per unit u_err (0.20->0.70)
     hover_cruise: float = 0.265       # MEASURED hover ~0.27 (bracket 0.22->-1.59, 0.30->+1.2,
                                       # zero-cross ~0.27); set a hair below, course descends
-    k_thrust_v: float = 0.027         # thrust change per unit v_err (was 0.12)
+    k_thrust_v: float = 0.027         # thrust change per unit v_err (good in flight; unchanged)
     min_thrust: float = 0.05
     max_thrust: float = 0.60
 
@@ -146,9 +147,18 @@ class ServoConfig:
     # calibration), so the vehicle really sees <= this. Raise as tuning firms up.
     max_cmd_rate_rad_s: float = 1.2
 
+    # ---- anti-chase gating (first-flight fix: it grabbed distant gates) ----
+    # While we have a RECENT gate, reject a detection that is too small (a distant
+    # gate) or that jumped too far frame-to-frame (a real gate can't teleport).
+    # Once gateless past reacquire_s, gating is dropped so we can re-lock anything.
+    min_gate_size: float = 0.04       # reject size_frac below this while tracking
+    max_u_jump: float = 0.5           # reject |u - last_u| above this while tracking
+
     # ---- lost-gate behaviour ----
     reacquire_s: float = 0.6          # coast straight-ish this long after losing gate
-    search_yaw: float = 0.25          # then yaw (normalised) toward last-seen side
+    search_yaw: float = 0.06          # then yaw toward last-seen side. 0.06*12=0.72 rad/s;
+                                      # a literal halve (0.125) would still clamp to 1.2 and
+                                      # not change, so set to ~half the clamp instead.
     lost_thrust_scale: float = 0.9    # ease thrust while blind so we don't bury it
 
     # bookkeeping (not a knob)
@@ -259,13 +269,18 @@ class GateDetector:
             return colour | bright
         return colour
 
-    def _select_blob(self, mask):
-        """Nearest gate = the LARGEST connected blob. Dilate 1 px to bridge
-        hollow-square gaps, label 8-connected, score each blob by its ORIGINAL-
-        mask pixel count; among blobs within largest_blob_tol of the max area,
-        prefer the LOWEST centroid (largest y = nearest in perspective).
+    def _select_blob(self, mask, prefer_u=None):
+        """Pick a gate blob. Dilate 1 px to bridge hollow-square gaps, label
+        8-connected, score each blob by its ORIGINAL-mask pixel count.
+
+        If prefer_u is given (the last-tracked u, normalised), prefer CONTINUITY:
+        the non-trivial blob whose centroid is nearest that horizontal position,
+        so we keep tracking the SAME gate rather than jumping to whichever blob is
+        momentarily largest. Otherwise (re-acquiring) pick the largest blob,
+        tie-broken by lowest centroid (nearest in perspective).
         Returns (cx, cy, area_px) or None."""
         c = self.cfg
+        H, W = mask.shape
         work = _dilate1(mask) if c.dilate_gaps else mask
         stats = []
         for comp in _connected_components(work):
@@ -278,12 +293,20 @@ class GateDetector:
             stats.append((n, cx, cy))
         if not stats:
             return None
+        if prefer_u is not None:
+            # Continuity: nearest non-trivial blob to the last-tracked position.
+            floor = c.min_area_frac * H * W
+            near = [s for s in stats if s[0] >= floor]
+            if near:
+                target_cx = prefer_u * (W / 2.0) + W / 2.0
+                n, cx, cy = min(near, key=lambda s: abs(s[1] - target_cx))
+                return float(cx), float(cy), float(n)
         max_area = max(s[0] for s in stats)
         cand = [s for s in stats if s[0] >= c.largest_blob_tol * max_area]
         n, cx, cy = max(cand, key=lambda s: s[2])   # lowest in frame = nearest
         return float(cx), float(cy), float(n)
 
-    def detect(self, frame_rgb: np.ndarray) -> GateDetection:
+    def detect(self, frame_rgb: np.ndarray, prefer_u=None) -> GateDetection:
         c = self.cfg
         H, W = frame_rgb.shape[0], frame_rgb.shape[1]
         total = H * W
@@ -294,7 +317,7 @@ class GateDetector:
             return GateDetection(found=False)
 
         if c.use_largest_blob:
-            sel = self._select_blob(mask)
+            sel = self._select_blob(mask, prefer_u=prefer_u)
             if sel is None:
                 return GateDetection(found=False)
             cx, cy, area = sel
@@ -454,10 +477,25 @@ class VisionServoController:
                             self._active_gate_prev, active_gate)
             self._active_gate_prev = active_gate
 
-        det = self.detector.detect(frame_rgb)
+        # Track continuity: while we've had a gate recently, bias the detector
+        # toward the same blob and vet the detection; once gateless past
+        # reacquire_s, drop the gating and re-lock anything.
+        had_recent = (now - self._last_seen_t) <= c.reacquire_s
+        prefer = self._last_u_err if had_recent else None
+        det = self.detector.detect(frame_rgb, prefer_u=prefer)
         cruise_pitch = math.radians(c.cruise_pitch_deg)
 
-        if det.found:
+        # Anti-chase gating: reject a distant (small) or teleporting detection
+        # while tracking, so a gate leaving frame doesn't make us chase far gates.
+        accepted = det.found
+        reject = ""
+        if det.found and had_recent:
+            if det.size_frac < c.min_gate_size:
+                accepted, reject = False, "small"
+            elif abs(det.u_err - self._last_u_err) > c.max_u_jump:
+                accepted, reject = False, "jump"
+
+        if accepted:
             self._last_seen_t = now
             self._last_u_err = det.u_err
 
@@ -470,8 +508,8 @@ class VisionServoController:
             thrust = c.hover_cruise - c.k_thrust_v * det.v_err
             thrust = float(np.clip(thrust, c.min_thrust, c.max_thrust))
         else:
-            # Lost the gate. Briefly coast level+forward (it leaves frame as we
-            # pass through), then yaw toward where it was last seen.
+            # No usable gate. Briefly coast level+forward (it leaves frame as we
+            # pass through / a rejected far gate), then gently yaw toward last-seen.
             dt_lost = now - self._last_seen_t
             des_roll = 0.0
             des_pitch = cruise_pitch
@@ -485,19 +523,21 @@ class VisionServoController:
         roll_n, pitch_n, yaw_n = self._attitude_rates(
             des_roll, des_pitch, des_yaw, gravity, gyro)
 
-        # Per-frame tuning log (throttled ~10 Hz): detection vs INTENDED rates, so a
-        # bad flight is diagnosable as bad DETECTION (u/v/size wrong) vs bad GAINS
-        # (detection fine but rates wild). Intended rate = normalised * MAX_BODY_RATE.
+        # Per-frame tuning log (throttled ~10 Hz). det = was a blob detected;
+        # use = did we ACT on it (Y) or why not (small/jump/n). Lets a bad flight
+        # be diagnosed as bad DETECTION vs bad GAINS vs over-eager gating.
         if now - self._last_log_t >= 0.1:
             self._last_log_t = now
             logger.info(
-                "[servo] gate=%s u=%+.3f v=%+.3f size=%.3f | intended rad/s "
+                "[servo] det=%s use=%s u=%+.3f v=%+.3f size=%.3f | intended rad/s "
                 "roll=%+.2f pitch=%+.2f yaw=%+.2f thr=%.3f",
-                "Y" if det.found else "n", det.u_err, det.v_err, det.size_frac,
+                "Y" if det.found else "n", ("Y" if accepted else (reject or "n")),
+                det.u_err, det.v_err, det.size_frac,
                 roll_n * MAX_BODY_RATE, pitch_n * MAX_BODY_RATE, yaw_n * MAX_BODY_RATE,
                 thrust)
 
         return {"throttle": thrust, "roll": roll_n, "pitch": pitch_n, "yaw": yaw_n,
-                "_debug": {"found": det.found, "u_err": det.u_err, "v_err": det.v_err,
+                "_debug": {"found": det.found, "accepted": accepted, "reject": reject,
+                           "u_err": det.u_err, "v_err": det.v_err,
                            "size": det.size_frac, "des_roll": des_roll,
                            "des_pitch": des_pitch, "des_yaw": des_yaw}}

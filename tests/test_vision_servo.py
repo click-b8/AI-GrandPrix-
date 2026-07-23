@@ -255,6 +255,46 @@ def test_lost_gate_coasts_then_searches():
     assert not search["_debug"]["found"]
 
 
+# --- anti-chase gating (first-flight fix) ---
+def test_rejects_small_gate_while_tracking():
+    ctl = VisionServoController()
+    ctl.command(make_frame(0.5, 0.5, size_frac=0.20), telem(), active_gate=0, now=100.0)
+    # a small distant gate right after (detected, but size < min_gate_size 0.04)
+    # -> rejected as "small", servo coasts
+    out = ctl.command(make_frame(0.5, 0.5, size_frac=0.03), telem(), active_gate=0, now=100.1)
+    assert out["_debug"]["found"] and not out["_debug"]["accepted"]
+    assert out["_debug"]["reject"] == "small"
+
+
+def test_rejects_teleport_jump_while_tracking():
+    ctl = VisionServoController()
+    ctl.command(make_frame(0.25, 0.5, size_frac=0.20), telem(), active_gate=0, now=100.0)
+    # a big gate suddenly on the far side (|du| ~ 0.9 > max_u_jump) -> "jump"
+    out = ctl.command(make_frame(0.80, 0.5, size_frac=0.20), telem(), active_gate=0, now=100.1)
+    assert out["_debug"]["found"] and not out["_debug"]["accepted"]
+    assert out["_debug"]["reject"] == "jump"
+
+
+def test_small_gate_accepted_after_reacquire_window():
+    ctl = VisionServoController()
+    ctl.command(make_frame(0.5, 0.5, size_frac=0.20), telem(), active_gate=0, now=100.0)
+    # gateless past reacquire_s -> gating dropped, small gate re-locks
+    out = ctl.command(make_frame(0.5, 0.5, size_frac=0.03), telem(), active_gate=0, now=102.0)
+    assert out["_debug"]["accepted"]
+
+
+def test_continuity_prefers_last_tracked_blob():
+    ctl = VisionServoController()
+    # lock a gate on the LEFT
+    ctl.command(make_frame(0.30, 0.5, size_frac=0.16), telem(), active_gate=0, now=100.0)
+    # now two gates: left (near last pos) + a slightly bigger one on the right
+    frame = make_frame(0.30, 0.5, size_frac=0.16)
+    add_square(frame, 0.72, 0.5, size_frac=0.18)
+    out = ctl.command(frame, telem(), active_gate=0, now=100.1)
+    # continuity keeps the LEFT gate despite the right one being larger
+    assert out["_debug"]["accepted"] and out["_debug"]["u_err"] < -0.1
+
+
 def test_command_contract_keys_and_ranges():
     cmd = VisionServoController().command(make_frame(0.6, 0.4), telem(), active_gate=1)
     for k in ("throttle", "roll", "pitch", "yaw"):
