@@ -260,6 +260,7 @@ class SCUBALabMAVLinkAdapter:
         race_started_source=None,
         device: str = None,
         hover_probe: float = None,
+        command_source=None,
     ):
         """
         Args:
@@ -280,6 +281,12 @@ class SCUBALabMAVLinkAdapter:
                            IGNORED: after GO the adapter commands this fixed thrust
                            with zero body rates for HOVER_PROBE_DURATION_S, logging
                            vz each frame, then cuts thrust. None = normal operation.
+            command_source: Optional zero-arg callable returning a command dict
+                           {throttle,roll,pitch,yaw}. When provided, the RL model is
+                           NOT loaded and this is used as the control source instead
+                           (the hardcoded vision-servo path, vq1_vision_servo.py).
+                           It owns its own inputs (pulls its full-res frame + IMU +
+                           active_gate). Same GO-gating/encoding/send apply.
         """
         if control_mode not in ("attitude", "rates", "actuator"):
             raise ValueError(f"control_mode must be 'attitude', 'rates', or 'actuator'; got {control_mode!r}")
@@ -307,9 +314,15 @@ class SCUBALabMAVLinkAdapter:
             self.target_system   = TARGET_SYSTEM_ID
             self.target_component = TARGET_COMPONENT_ID
 
-        logger.info("[SCUBA Lab MAVLink] Loading model: %s", model_path)
-        self.adapter = SCUBALabAdapter(model_path, device=device)
-        logger.info("[SCUBA Lab MAVLink] Model loaded.")
+        self._command_source = command_source
+        if command_source is not None:
+            self.adapter = None
+            logger.info("[SCUBA Lab MAVLink] command_source provided -> RL model "
+                        "NOT loaded; using hardcoded controller.")
+        else:
+            logger.info("[SCUBA Lab MAVLink] Loading model: %s", model_path)
+            self.adapter = SCUBALabAdapter(model_path, device=device)
+            logger.info("[SCUBA Lab MAVLink] Model loaded.")
 
         self.frame_builder = MAVLinkFrameBuilder()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -434,12 +447,14 @@ class SCUBALabMAVLinkAdapter:
         # On the GO edge, clear stale per-race observation state (frame deque +
         # prev_action) so a prior race can't bleed into the first frames.
         race_now = self._race_started_source()
-        if race_now and not self._race_started_prev:
+        if race_now and not self._race_started_prev and self.adapter is not None:
             self.adapter.reset_observation()
         self._race_started_prev = race_now
 
         if self.hover_probe is not None:
             command = self._hover_probe_command()
+        elif self._command_source is not None:
+            command = self._command_source()
         else:
             command = self.adapter.step(self.latest_telemetry, vision_frame)
 

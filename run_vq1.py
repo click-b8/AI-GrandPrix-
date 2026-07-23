@@ -150,6 +150,8 @@ _latest_telemetry = {
 _race_started: bool = False  # set True by _MAVLinkReceiver once GO fires this session
 _countdown_armed: bool = False  # True once a GENUINE future countdown is observed
 _armed_race_start_ms: int = -1  # the fresh race_start latched when the countdown armed
+_active_gate: int = -1  # latest active_gate index from ENCAPSULATED_DATA race status;
+                        # the hardcoded vision-servo uses this to sequence gates.
 START_MARGIN_MS = 100  # delay GO this far past race_start to absorb detect lag;
                        # starting late is safe, starting early is an instant DQ.
 STALE_DELTA_MS = -10000  # race_start whose delta is below this is a stale echo from
@@ -332,6 +334,8 @@ class _MAVLinkReceiver:
                         logger.debug("[Race Status] unpack error: %s", exc)
                     else:
                         global _race_started, _countdown_armed, _armed_race_start_ms
+                        global _active_gate
+                        _active_gate = int(active_gate)
                         # race_start_ms is the server clock value (ms since sim
                         # boot) AT WHICH the race goes live. Two failure modes:
                         #   (1) Gating on race_start_ms >= 0 fired at the top of
@@ -428,13 +432,23 @@ async def run(
     control_mode: str = "attitude",
     device: str = None,
     hover_probe: float = None,
+    controller: str = "model",
 ):
     global _vision_receiver, _mavlink_rx, _timesync, _trajectory_logger
 
     from dcl_mavlink_adapter import SCUBALabMAVLinkAdapter, DCLTimesync
 
-    _check_model_path(CANONICAL_MODEL_PATH)
-    logger.info("Model path verified: %s", CANONICAL_MODEL_PATH)
+    use_vision_servo = (controller == "vision-servo")
+    if use_vision_servo:
+        logger.warning(
+            "[CONTROLLER] HARDCODED vision-servo (NO RL model). Gate detection + "
+            "guidance gains are UNTUNED against the real sim — calibrate first "
+            "(tools/vision_servo_dryrun.py on a real frame; --hover-probe for the "
+            "hover fraction). See vq1_vision_servo.py CALIBRATE banner."
+        )
+    else:
+        _check_model_path(CANONICAL_MODEL_PATH)
+        logger.info("Model path verified: %s", CANONICAL_MODEL_PATH)
 
     if hover_probe is not None:
         logger.warning(
@@ -488,6 +502,28 @@ async def run(
         _mavlink_rx = _MAVLinkReceiver(sim_conn)
         _mavlink_rx.start()
 
+    # Hardcoded vision-servo command source (no RL). It owns its own inputs:
+    # pulls the FULL-RES frame from the vision receiver, the IMU-derived
+    # gravity+gyro from _latest_telemetry, and the sequencing gate from
+    # _active_gate. Resets on the GO edge so a prior race can't bleed in.
+    command_source = None
+    if use_vision_servo:
+        from vq1_vision_servo import VisionServoController
+        _servo = VisionServoController()
+        _servo_prev_race = {"flag": False}
+
+        def command_source():
+            r = _race_started
+            if r and not _servo_prev_race["flag"]:
+                _servo.reset()
+            _servo_prev_race["flag"] = r
+            frame = (_vision_receiver.get_latest_frame()
+                     if _vision_receiver is not None
+                     else __import__("numpy").zeros((360, 640, 3), dtype="uint8"))
+            with _telem_lock:
+                telem = dict(_latest_telemetry)
+            return _servo.command(frame, telem, active_gate=_active_gate)
+
     adapter = SCUBALabMAVLinkAdapter(
         model_path=CANONICAL_MODEL_PATH,
         udp_host=host,
@@ -498,6 +534,7 @@ async def run(
         race_started_source=lambda: _race_started,
         device=device,
         hover_probe=hover_probe,
+        command_source=command_source,
     )
 
     if log_trajectory:
@@ -567,6 +604,12 @@ if __name__ == "__main__":
                         choices=["attitude", "rates", "actuator"],
                         help="attitude/rates: SET_ATTITUDE_TARGET type_mask=128 (CTBR); "
                              "actuator: SET_ACTUATOR_CONTROL_TARGET group 0 at --hz")
+    parser.add_argument("--controller", default="model",
+                        choices=["model", "vision-servo"],
+                        help="model: distilled RL policy (default, needs the model + "
+                             "vision frames). vision-servo: HARDCODED gate-centering "
+                             "controller, no RL (vq1_vision_servo.py). Reuses the same "
+                             "arm/TIMESYNC/GO/SET_ATTITUDE_TARGET path.")
     parser.add_argument("--vision-port", type=int, default=5600,
                         help="UDP port for DCL FPV vision stream (VADR-TS-002 s4.6, default 5600)")
     parser.add_argument(
@@ -612,4 +655,4 @@ if __name__ == "__main__":
 
     asyncio.run(run(args.host, args.port, args.hz, args.vision_port,
                     args.log_trajectory, args.control_mode, args.device,
-                    args.hover_probe))
+                    args.hover_probe, args.controller))
