@@ -48,6 +48,41 @@ from dcl_adapter import SCUBALabAdapter
 # Body-rate scale: must match training config.py MAX_BODY_RATE
 MAX_BODY_RATE = 12.0  # rad/s
 
+# ---------------------------------------------------------------------------
+# Per-axis PLANT calibration for the DCL sim (build v3385, measured 2026-07-22
+# via tools/probe_rate_vs_angle.py -- constant-rate sweeps, gyro time-series).
+#
+# The sim is genuine RATE control (linear, holds) despite its "FLIGHT MODE:
+# ANGLE" UI label, BUT every body-rate axis is SIGN-INVERTED and ~2.5x hot:
+#
+#   gyro_measured = K_axis * wire_rate
+#     pitch: cmd -0.15/-0.30/-0.60 -> +0.371/+0.747/+1.572  => K = -2.49
+#     roll : cmd -0.30/-0.15/+0.30 -> +0.763/+0.388/-0.760  => K = -2.55
+#     yaw  : cmd -0.30/-0.15/+0.30 -> +0.667/+0.323/-0.667  => K = -2.20  (softer)
+#
+# To make the plant achieve an INTENDED body rate R, send wire = R / K_axis
+# (this folds in BOTH the sign flip and the scale). Applied at the single point
+# where a normalised command becomes a wire rate, so every controller -- the RL
+# policy AND the vision servo -- is corrected in one place. Left uncorrected, a
+# full command (norm 1.0 -> 12 rad/s wire) drove the plant to ~30 rad/s with the
+# wrong sign: positive feedback -> the documented distill tumble.
+#
+# Re-measure and update these if the sim build changes. The rate-probe sends RAW
+# (bypasses this), so post-fix it must still read K~-2.5 raw.
+#
+# NOTE: applies to the body-rate paths (SET_ATTITUDE_TARGET, control_mode
+# attitude/rates). The 'actuator' path (SET_ACTUATOR_CONTROL_TARGET) is a
+# different interface and is NOT calibrated here -- measure separately if used.
+PLANT_RATE_CALIB = {"roll": -2.55, "pitch": -2.49, "yaw": -2.20}
+
+
+def wire_body_rate(axis: str, command_norm: float) -> float:
+    """Normalised command [-1,1] on `axis` -> calibrated wire body rate (rad/s).
+
+    intended R = command_norm * MAX_BODY_RATE; wire = R / K_axis so the plant,
+    which yields K_axis * wire, actually delivers R. See PLANT_RATE_CALIB."""
+    return float(command_norm) * MAX_BODY_RATE / PLANT_RATE_CALIB[axis]
+
 # --hover-probe diagnostic: after GO, hold a fixed thrust with zero body rates
 # for this long while logging vz, then cut thrust to 0. Used to bracket DCL's
 # hover-thrust fraction across separate races (vz ~= 0 => that thrust hovers).
@@ -476,9 +511,10 @@ class SCUBALabMAVLinkAdapter:
             # update_attitude_flight_control() in PyAIPilotExample controller.py.
             now_ms = int(time.time() * 1000)
             if self._race_started_source():
-                tx_roll   = float(command["roll"])   * MAX_BODY_RATE
-                tx_pitch  = float(command["pitch"])  * MAX_BODY_RATE
-                tx_yaw    = float(command["yaw"])    * MAX_BODY_RATE
+                # PLANT_RATE_CALIB: wire = intended / K_axis (sign + scale). See top.
+                tx_roll   = wire_body_rate("roll",  command["roll"])
+                tx_pitch  = wire_body_rate("pitch", command["pitch"])
+                tx_yaw    = wire_body_rate("yaw",   command["yaw"])
                 tx_thrust = float(command["throttle"])
             else:
                 tx_roll = tx_pitch = tx_yaw = tx_thrust = 0.0
@@ -502,11 +538,12 @@ class SCUBALabMAVLinkAdapter:
                 )
             frame = b""
         else:  # 'attitude' or 'rates', stub/test mode — use custom frame builder
+            # Same PLANT_RATE_CALIB correction as the real-sim path (one rule).
             frame = self.frame_builder.set_attitude_target(
                 time_boot_ms=self.get_time_boot_ms(),
-                body_roll_rate=float(command["roll"])   * MAX_BODY_RATE,
-                body_pitch_rate=float(command["pitch"]) * MAX_BODY_RATE,
-                body_yaw_rate=float(command["yaw"])     * MAX_BODY_RATE,
+                body_roll_rate=wire_body_rate("roll",  command["roll"]),
+                body_pitch_rate=wire_body_rate("pitch", command["pitch"]),
+                body_yaw_rate=wire_body_rate("yaw",   command["yaw"]),
                 thrust=float(command["throttle"]),
                 target_system=self.target_system,
                 target_component=self.target_component,
