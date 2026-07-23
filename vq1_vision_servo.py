@@ -125,19 +125,26 @@ class ServoConfig:
     tube_min_band_frac: float = 0.004      # min masked frac of a band to trust its centre
 
     # ---- guidance (outer loop, from vision) ----
+    # Gains cut ~4.5x from the original guesses for a sluggish-but-stable first
+    # flight (2026-07-23). Widen once it holds a gate without oscillating.
     cruise_pitch_deg: float = -18.0   # forward lean held in cruise (nose-down neg)
-    k_bank: float = 0.60              # desired roll angle (rad) per unit u_err
+    k_bank: float = 0.13              # desired roll angle (rad) per unit u_err (was 0.60)
     max_bank_deg: float = 35.0
-    k_yaw: float = 0.9                # desired yaw RATE (normalised) per unit u_err
-    hover_cruise: float = 0.20        # UNMEASURED hover-thrust guess (see hover-probe)
-    k_thrust_v: float = 0.12          # thrust change per unit v_err (gate low -> descend)
+    k_yaw: float = 0.20               # desired yaw RATE (normalised) per unit u_err (was 0.9)
+    hover_cruise: float = 0.265       # MEASURED hover ~0.27 (bracket 0.22->-1.59, 0.30->+1.2,
+                                      # zero-cross ~0.27); set a hair below, course descends
+    k_thrust_v: float = 0.027         # thrust change per unit v_err (was 0.12)
     min_thrust: float = 0.05
     max_thrust: float = 0.60
 
     # ---- attitude stabiliser (inner loop, from IMU) ----
-    kp_att: float = 6.0               # rad/s of body rate per rad of angle error
-    kd_att: float = 0.35              # damping on measured body rate (per rad/s)
+    kp_att: float = 1.3               # rad/s of body rate per rad of angle error (was 6.0)
+    kd_att: float = 0.08              # damping on measured body rate (per rad/s) (was 0.35)
     kd_yaw: float = 0.15              # light yaw-rate damping
+    # Hard cap on COMMANDED body rate (rad/s). 12 rad/s full deflection is far too
+    # much authority for gate centring. Applied to the INTENDED rate (pre plant
+    # calibration), so the vehicle really sees <= this. Raise as tuning firms up.
+    max_cmd_rate_rad_s: float = 1.2
 
     # ---- lost-gate behaviour ----
     reacquire_s: float = 0.6          # coast straight-ish this long after losing gate
@@ -399,6 +406,7 @@ class VisionServoController:
         self._last_u_err = 0.0
         self._active_gate_prev = None
         self._t0 = None
+        self._last_log_t = -1e9   # throttle for the per-frame tuning log
 
     def reset(self):
         """Clear per-race transient state. Call on the GO edge so a prior race's
@@ -421,9 +429,12 @@ class VisionServoController:
         pitch_rate = c.kp_att * (des_pitch - pitch) - c.kd_att * q    # rad/s
         yaw_rate = des_yaw_rate_norm * MAX_BODY_RATE - c.kd_yaw * r   # rad/s
 
-        roll_n = float(np.clip(roll_rate / MAX_BODY_RATE, -1.0, 1.0))
-        pitch_n = float(np.clip(pitch_rate / MAX_BODY_RATE, -1.0, 1.0))
-        yaw_n = float(np.clip(yaw_rate / MAX_BODY_RATE, -1.0, 1.0))
+        # Clamp the COMMANDED rate to max_cmd_rate_rad_s (normalised limit), not the
+        # full +/-1 (=+/-MAX_BODY_RATE). Caps authority for gate centring.
+        lim = c.max_cmd_rate_rad_s / MAX_BODY_RATE
+        roll_n = float(np.clip(roll_rate / MAX_BODY_RATE, -lim, lim))
+        pitch_n = float(np.clip(pitch_rate / MAX_BODY_RATE, -lim, lim))
+        yaw_n = float(np.clip(yaw_rate / MAX_BODY_RATE, -lim, lim))
         return roll_n, pitch_n, yaw_n
 
     # -- full step ----------------------------------------------------------
@@ -473,6 +484,18 @@ class VisionServoController:
 
         roll_n, pitch_n, yaw_n = self._attitude_rates(
             des_roll, des_pitch, des_yaw, gravity, gyro)
+
+        # Per-frame tuning log (throttled ~10 Hz): detection vs INTENDED rates, so a
+        # bad flight is diagnosable as bad DETECTION (u/v/size wrong) vs bad GAINS
+        # (detection fine but rates wild). Intended rate = normalised * MAX_BODY_RATE.
+        if now - self._last_log_t >= 0.1:
+            self._last_log_t = now
+            logger.info(
+                "[servo] gate=%s u=%+.3f v=%+.3f size=%.3f | intended rad/s "
+                "roll=%+.2f pitch=%+.2f yaw=%+.2f thr=%.3f",
+                "Y" if det.found else "n", det.u_err, det.v_err, det.size_frac,
+                roll_n * MAX_BODY_RATE, pitch_n * MAX_BODY_RATE, yaw_n * MAX_BODY_RATE,
+                thrust)
 
         return {"throttle": thrust, "roll": roll_n, "pitch": pitch_n, "yaw": yaw_n,
                 "_debug": {"found": det.found, "u_err": det.u_err, "v_err": det.v_err,
