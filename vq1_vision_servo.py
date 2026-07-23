@@ -104,8 +104,25 @@ class ServoConfig:
     bright_sat_max: float = 0.25
     min_area_frac: float = 0.0002  # ~46 px: keeps DISTANT gates (a far gate frame is
                                    # ~30-90 px). Safe because the hue+val mask is clean.
-    trim_iters: int = 2            # outlier-trim passes on the mask centroid
+    trim_iters: int = 2            # outlier-trim passes (legacy path, use_largest_blob=False)
     trim_sigma: float = 2.0
+    # nearest-gate selection: target the LARGEST connected blob, not the centroid
+    # of all red pixels (which blends near+far gates and aims between them).
+    use_largest_blob: bool = True
+    dilate_gaps: bool = True            # 1-px dilation bridges hollow-square JPEG breaks
+    largest_blob_tol: float = 0.70      # blobs within this frac of max area are tie-broken
+    max_mask_frac_reject: float = 0.20  # if the mask covers >20% it isn't gates -> reject
+
+    # ---- guidance tube (cyan) -- MEASUREMENT ONLY, no guidance wiring yet ----
+    # Measured on vision_frame.png: tube hue ~198 (176-239), sat med 0.72, val
+    # med 0.52, ~5% of frame, continuous down the course centreline.
+    tube_hue_lo: float = 180.0
+    tube_hue_hi: float = 215.0
+    tube_sat_min: float = 0.30
+    tube_val_min: float = 0.40
+    tube_lower_band: tuple = (0.60, 0.85)  # frac of H: nearest/widest -> most stable u
+    tube_upper_band: tuple = (0.35, 0.55)  # frac of H: curvature reference (bend ahead)
+    tube_min_band_frac: float = 0.004      # min masked frac of a band to trust its centre
 
     # ---- guidance (outer loop, from vision) ----
     cruise_pitch_deg: float = -18.0   # forward lean held in cruise (nose-down neg)
@@ -169,6 +186,45 @@ def rgb_to_hsv_arrays(frame_rgb: np.ndarray):
     return h, s, v
 
 
+def _dilate1(mask):
+    """1-px 8-connected binary dilation, pure numpy. Bridges the small breaks a
+    hollow-square gate frame gets from JPEG/anti-aliasing so it labels as ONE
+    blob rather than four disconnected sides."""
+    d = mask.copy()
+    d[:-1, :] |= mask[1:, :]; d[1:, :] |= mask[:-1, :]
+    d[:, :-1] |= mask[:, 1:]; d[:, 1:] |= mask[:, :-1]
+    d[:-1, :-1] |= mask[1:, 1:]; d[:-1, 1:] |= mask[1:, :-1]
+    d[1:, :-1] |= mask[:-1, 1:]; d[1:, 1:] |= mask[:-1, :-1]
+    return d
+
+
+def _connected_components(mask):
+    """8-connected components over the True pixels -> list of coord lists.
+    Pure-numpy nonzero + iterative DFS over the pixel set. Intended for SMALL
+    masks (gate pixels); callers must gate on mask size first (max_mask_frac)."""
+    ys, xs = np.nonzero(mask)
+    coords = set(zip(ys.tolist(), xs.tolist()))
+    visited = set()
+    comps = []
+    NB = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+    for seed in coords:
+        if seed in visited:
+            continue
+        stack = [seed]
+        visited.add(seed)
+        comp = []
+        while stack:
+            y, x = stack.pop()
+            comp.append((y, x))
+            for dy, dx in NB:
+                nb = (y + dy, x + dx)
+                if nb in coords and nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+        comps.append(comp)
+    return comps
+
+
 class GateDetector:
     """Pure-numpy gate detector. No OpenCV/scipy (neither is installed).
 
@@ -196,30 +252,58 @@ class GateDetector:
             return colour | bright
         return colour
 
+    def _select_blob(self, mask):
+        """Nearest gate = the LARGEST connected blob. Dilate 1 px to bridge
+        hollow-square gaps, label 8-connected, score each blob by its ORIGINAL-
+        mask pixel count; among blobs within largest_blob_tol of the max area,
+        prefer the LOWEST centroid (largest y = nearest in perspective).
+        Returns (cx, cy, area_px) or None."""
+        c = self.cfg
+        work = _dilate1(mask) if c.dilate_gaps else mask
+        stats = []
+        for comp in _connected_components(work):
+            pts = [(y, x) for (y, x) in comp if mask[y, x]]  # count ORIGINAL px only
+            if not pts:
+                continue
+            n = len(pts)
+            cx = sum(p[1] for p in pts) / n
+            cy = sum(p[0] for p in pts) / n
+            stats.append((n, cx, cy))
+        if not stats:
+            return None
+        max_area = max(s[0] for s in stats)
+        cand = [s for s in stats if s[0] >= c.largest_blob_tol * max_area]
+        n, cx, cy = max(cand, key=lambda s: s[2])   # lowest in frame = nearest
+        return float(cx), float(cy), float(n)
+
     def detect(self, frame_rgb: np.ndarray) -> GateDetection:
         c = self.cfg
         H, W = frame_rgb.shape[0], frame_rgb.shape[1]
-        mask = self._mask(frame_rgb)
-        ys, xs = np.nonzero(mask)
         total = H * W
-        if xs.size == 0 or xs.size < c.min_area_frac * total:
+        mask = self._mask(frame_rgb)
+        n_true = int(mask.sum())
+        # Empty, or the mask blew up (bad thresholds / whole-frame red) -> not a gate.
+        if n_true == 0 or n_true > c.max_mask_frac_reject * total:
             return GateDetection(found=False)
 
-        xs = xs.astype(np.float32)
-        ys = ys.astype(np.float32)
-        # Outlier-trim: iteratively drop pixels far from the running centroid so a
-        # secondary bright patch (sky glare, a distant gate) doesn't drag us off.
-        for _ in range(c.trim_iters):
-            cx, cy = xs.mean(), ys.mean()
-            dx, dy = xs - cx, ys - cy
-            d = np.sqrt(dx * dx + dy * dy)
-            keep = d <= (d.mean() + c.trim_sigma * d.std() + 1e-6)
-            if keep.sum() < max(4, c.min_area_frac * total * 0.5):
-                break
-            xs, ys = xs[keep], ys[keep]
+        if c.use_largest_blob:
+            sel = self._select_blob(mask)
+            if sel is None:
+                return GateDetection(found=False)
+            cx, cy, area = sel
+        else:
+            # Legacy: trimmed centroid of ALL masked pixels (blends near+far gates).
+            ys, xs = np.nonzero(mask)
+            xs = xs.astype(np.float32); ys = ys.astype(np.float32)
+            for _ in range(c.trim_iters):
+                mx, my = xs.mean(), ys.mean()
+                d = np.sqrt((xs - mx) ** 2 + (ys - my) ** 2)
+                keep = d <= (d.mean() + c.trim_sigma * d.std() + 1e-6)
+                if keep.sum() < max(4, c.min_area_frac * total * 0.5):
+                    break
+                xs, ys = xs[keep], ys[keep]
+            cx, cy, area = float(xs.mean()), float(ys.mean()), float(xs.size)
 
-        cx, cy = float(xs.mean()), float(ys.mean())
-        area = float(xs.size)
         area_frac = area / total
         if area_frac < c.min_area_frac:
             return GateDetection(found=False)
@@ -229,6 +313,65 @@ class GateDetector:
         size_frac = math.sqrt(area) / H
         return GateDetection(found=True, u_err=u_err, v_err=v_err,
                              size_frac=size_frac, area_frac=area_frac, cx=cx, cy=cy)
+
+
+@dataclass
+class TubeMeasurement:
+    found: bool
+    u_tube: float = 0.0     # lower-band horizontal centre, [-1,1], + = tube RIGHT of us
+    curvature: float = 0.0  # u_upper - u_lower; + = course bends RIGHT ahead
+    u_lower: float = 0.0
+    u_upper: float = 0.0
+    area_frac: float = 0.0
+
+
+class TubeDetector:
+    """MEASUREMENT-ONLY detector for the cyan guidance tube down the course centre.
+
+    Not wired into guidance yet (held for the blend law, pending the rate-vs-angle
+    verdict). Exposes a coarse course-following signal that is far more continuous
+    than a distant gate blob:
+
+      u_tube    -- horizontal centre of the tube in a LOWER band (nearest/widest,
+                   most stable). Keep ~0 to stay centred on the course.
+      curvature -- (upper-band centre) - (lower-band centre): the far part of the
+                   tube shifting right of the near part means the course bends
+                   right ahead. Anticipatory steering a single gate can't give.
+    """
+
+    def __init__(self, cfg: ServoConfig):
+        self.cfg = cfg
+
+    def _mask(self, frame_rgb: np.ndarray) -> np.ndarray:
+        h, s, v = rgb_to_hsv_arrays(frame_rgb)
+        c = self.cfg
+        return ((h >= c.tube_hue_lo) & (h <= c.tube_hue_hi)
+                & (s >= c.tube_sat_min) & (v >= c.tube_val_min))
+
+    def _band_center(self, mask, y0f, y1f):
+        """Normalised horizontal centre of masked pixels in a horizontal band, or
+        None if the band is too sparse to trust."""
+        H, W = mask.shape
+        y0, y1 = int(y0f * H), int(y1f * H)
+        band = mask[y0:y1, :]
+        n = int(band.sum())
+        if band.size == 0 or n < self.cfg.tube_min_band_frac * band.size:
+            return None
+        cx = float(np.nonzero(band)[1].mean())
+        return (cx - W / 2.0) / (W / 2.0)
+
+    def measure(self, frame_rgb: np.ndarray) -> TubeMeasurement:
+        c = self.cfg
+        mask = self._mask(frame_rgb)
+        area_frac = float(mask.sum()) / mask.size
+        u_lower = self._band_center(mask, *c.tube_lower_band)
+        u_upper = self._band_center(mask, *c.tube_upper_band)
+        if u_lower is None:
+            return TubeMeasurement(found=False, area_frac=area_frac)
+        curv = (u_upper - u_lower) if u_upper is not None else 0.0
+        return TubeMeasurement(found=True, u_tube=u_lower, curvature=curv,
+                               u_lower=u_lower, u_upper=(u_upper or 0.0),
+                               area_frac=area_frac)
 
 
 def gravity_to_roll_pitch(gravity_frd):
@@ -251,6 +394,7 @@ class VisionServoController:
     def __init__(self, cfg: ServoConfig | None = None):
         self.cfg = cfg or ServoConfig()
         self.detector = GateDetector(self.cfg)
+        self.tube = TubeDetector(self.cfg)   # measurement only; not yet in command()
         self._last_seen_t = -1e9
         self._last_u_err = 0.0
         self._active_gate_prev = None

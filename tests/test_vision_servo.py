@@ -17,14 +17,36 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vq1_vision_servo import (  # noqa: E402
-    ServoConfig, VisionServoController, GateDetector, gravity_to_roll_pitch,
-    rgb_to_hsv_arrays,
+    ServoConfig, VisionServoController, GateDetector, TubeDetector,
+    gravity_to_roll_pitch, rgb_to_hsv_arrays,
 )
 
 # Bright RED gate, matching the calibrated red-wraparound band (hue ~0, high V).
 RED_GATE = (230, 30, 30)
+TUBE_CYAN = (30, 180, 220)   # hue ~193, in the tube band [180,215]
 LEVEL_G = (0.0, 0.0, 9.81)
 ZERO_GYRO = (0.0, 0.0, 0.0)
+
+
+def add_square(frame, cx_frac, cy_frac, size_frac, colour=RED_GATE):
+    h, w = frame.shape[0], frame.shape[1]
+    half = int(size_frac * h / 2)
+    cx, cy = int(cx_frac * w), int(cy_frac * h)
+    frame[max(0, cy - half):cy + half, max(0, cx - half):cx + half] = colour
+    return frame
+
+
+def make_tube(x_lower_frac, x_upper_frac=None, halfwidth=40, w=640, h=360):
+    """Vertical cyan stripe centred at x_lower_frac in the lower half and
+    x_upper_frac in the upper half (default same) — for curvature tests."""
+    if x_upper_frac is None:
+        x_upper_frac = x_lower_frac
+    frame = np.full((h, w, 3), 20, dtype=np.uint8)
+    for y in range(h):
+        frac = x_upper_frac if y < h // 2 else x_lower_frac
+        cx = int(frac * w)
+        frame[y, max(0, cx - halfwidth):cx + halfwidth] = TUBE_CYAN
+    return frame
 
 
 def make_frame(cx_frac, cy_frac, size_frac=0.18, colour=RED_GATE, w=640, h=360):
@@ -76,6 +98,60 @@ def test_detect_left_and_high():
 def test_detect_none_on_dark_frame():
     frame = np.full((360, 640, 3), 25, dtype=np.uint8)
     assert not GateDetector(ServoConfig()).detect(frame).found
+
+
+# --- largest-blob (nearest-gate) selection ---
+def test_largest_blob_picks_nearest_not_blend():
+    # Big near gate on the LEFT + small far gate on the RIGHT. The all-red
+    # centroid would blend toward center; largest-blob must lock the big one.
+    frame = make_frame(0.32, 0.45, size_frac=0.28)      # big, left
+    add_square(frame, 0.70, 0.72, size_frac=0.05)       # small, right
+    d = GateDetector(ServoConfig()).detect(frame)
+    assert d.found
+    assert d.u_err < -0.12                               # locked on the LEFT big gate
+    assert abs(d.u_err - (0.32 - 0.5) * 2) < 0.12        # near the big gate's true u
+
+
+def test_dilation_bridges_hollow_square():
+    # A hollow RED square (ring) must detect as ONE blob centred on it, not fail.
+    h, w = 360, 640
+    frame = np.full((h, w, 3), 20, dtype=np.uint8)
+    cx, cy, s = 320, 180, 40
+    frame[cy - s:cy + s, cx - s:cx - s + 3] = RED_GATE   # left edge
+    frame[cy - s:cy + s, cx + s - 3:cx + s] = RED_GATE   # right edge
+    frame[cy - s:cy - s + 3, cx - s:cx + s] = RED_GATE   # top edge
+    frame[cy + s - 3:cy + s, cx - s:cx + s] = RED_GATE   # bottom edge
+    d = GateDetector(ServoConfig()).detect(frame)
+    assert d.found and abs(d.u_err) < 0.05 and abs(d.v_err) < 0.05
+
+
+def test_mask_blowup_rejected():
+    # A frame flooded with red (mask > max_mask_frac_reject) is not a gate.
+    frame = np.full((360, 640, 3), 0, dtype=np.uint8)
+    frame[..., 0] = 230
+    assert not GateDetector(ServoConfig()).detect(frame).found
+
+
+# --- tube measurement (no guidance wiring) ---
+def test_tube_center_straight():
+    m = TubeDetector(ServoConfig()).measure(make_tube(0.5))
+    assert m.found and abs(m.u_tube) < 0.05 and abs(m.curvature) < 0.05
+
+
+def test_tube_bend_right():
+    # upper band shifted RIGHT of lower -> curvature > 0 (course bends right ahead)
+    m = TubeDetector(ServoConfig()).measure(make_tube(0.5, x_upper_frac=0.68))
+    assert m.found and m.curvature > 0.1
+
+
+def test_tube_bend_left():
+    m = TubeDetector(ServoConfig()).measure(make_tube(0.5, x_upper_frac=0.32))
+    assert m.found and m.curvature < -0.1
+
+
+def test_tube_absent():
+    dark = np.full((360, 640, 3), 20, dtype=np.uint8)
+    assert not TubeDetector(ServoConfig()).measure(dark).found
 
 
 def test_size_grows_with_gate():
