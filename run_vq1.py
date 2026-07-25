@@ -636,10 +636,11 @@ if __name__ == "__main__":
         default=None,
         metavar="THRUST",
         help="DIAGNOSTIC — ignore the model and command a FIXED thrust THRUST in "
-             "[0,1] with zero body rates for ~2s after GO, logging IMU vertical "
-             "acceleration each frame (vz is dead on v3385). Run separate races at "
-             "e.g. 0.30/0.40/0.50; the thrust where mean vert accel ~= 0 is DCL's "
-             "hover fraction. NOT for submission.",
+             "[0,1] with zero body rates for ~3s after GO. Reads IMU vertical accel "
+             "AND integrates it to a SINK RATE (vz is dead on v3385). Use to (a) "
+             "bracket hover (steady accel ~= 0) and (b) map thrust->sink for the "
+             "feedforward glide: run below-hover thrusts e.g. 0.29/0.26/0.23/0.20 "
+             "and read the DONE line's SINK RATE. NOT for submission.",
     )
     args = parser.parse_args()
     if args.hover_probe is not None and not (0.0 <= args.hover_probe <= 1.0):
