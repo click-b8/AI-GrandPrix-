@@ -110,9 +110,19 @@ def run_attempt(attempt_id, args):
     max_gate = -1
     finish = 0
     outcome = note = None
+    last_status = None            # latest [Race Status] fields (for the waiting print)
+    last_status_print = 0.0
 
     while outcome is None:
         now = time.time()
+        # OBSERVABLE WAIT: while there's no GO yet, echo the sim's race status every
+        # few seconds so "waiting for a countdown that never comes" is obvious from
+        # the console alone (delta>0 armed=True cycling = countdown coming; stale=True
+        # or no status = the sim isn't arming -> the (B) re-arm problem).
+        if not go_seen and (now - last_status_print) >= args.status_interval:
+            last_status_print = now
+            print(f"[grind #{attempt_id}] waiting for GO ({now - start:.0f}s) | "
+                  f"{last_status or 'NO race status received yet -- did the sim arm a countdown?'}")
         if not go_seen and (now - start) > args.startup_timeout:
             outcome, note = "ERROR", f"no GO within {args.startup_timeout:.0f}s (sim up? auto-race on?)"
             break
@@ -137,8 +147,12 @@ def run_attempt(attempt_id, args):
 
         logf.write(line + "\n")   # full trace to the per-attempt log
 
+        if "[Race Status]" in line:
+            last_status = line.split("[Race Status]", 1)[1].strip()
+
         if not go_seen and RE_GO.search(line):
             go_seen, go_wall = True, time.time()
+            print(f"[grind #{attempt_id}] GO -- flying")
             continue
         m = RE_STATUS.search(line)
         if m:
@@ -181,8 +195,11 @@ def main():
                     help="max s to reach GO before ERROR (sim up + auto-race on?)")
     p.add_argument("--race-window", type=float, default=480.0,
                     help="fallback TIMEOUT if a race stays live this long (DCL default 480)")
-    p.add_argument("--settle", type=float, default=3.0,
-                    help="pause after kill before relaunch, so the sim/port settle")
+    p.add_argument("--settle", type=float, default=5.0,
+                    help="pause after graceful stop before relaunch, so the sim resets the "
+                         "drone to the grid + arms the next race ((B) re-arm needs a clean gap)")
+    p.add_argument("--status-interval", type=float, default=5.0,
+                    help="while waiting for GO, echo the sim's race status this often (s)")
     p.add_argument("--controller", default="vision-servo",
                    choices=["vision-servo", "hybrid"],
                    help="which hardcoded controller to grind (default vision-servo)")

@@ -606,6 +606,15 @@ async def run(
             _timesync.stop()
         if _mavlink_rx is not None:
             _mavlink_rx.stop()
+        # Close the MAVLink socket CLEANLY (after the users of it are stopped). A
+        # clean disarm+disconnect is what lets the sim reset the drone to the grid
+        # and auto-arm the next race; an abrupt hard-kill leaves it armed+stuck.
+        if sim_conn is not None:
+            try:
+                sim_conn.close()
+                logger.info("MAVLink connection closed cleanly.")
+            except Exception as exc:
+                logger.warning("sim_conn close failed: %s", exc)
         if _vision_receiver is not None:
             _vision_receiver.stop()
         if _trajectory_logger is not None:
