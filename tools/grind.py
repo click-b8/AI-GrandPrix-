@@ -64,6 +64,24 @@ RE_STATUS = re.compile(r"delta=(-?\d+).*?active_gate=(-?\d+).*?race_finish_ns=(-
 _stop = False
 
 
+def _graceful_stop(proc, wait=5.0):
+    """End run_vq1 GRACEFULLY so its finally-block DISARM runs (a hard-kill skips
+    it, which may be why the sim won't auto-arm the next race). Send CTRL_BREAK
+    (Windows) / SIGINT (POSIX), wait for it to disarm+exit, then hard-kill as a
+    fallback."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=wait)
+    except Exception:
+        pass
+    _kill_tree(proc)   # ensure it's gone regardless
+
+
 def run_attempt(attempt_id, args):
     """One race: launch run_vq1, watch its log, classify the outcome, kill it."""
     cmd = [sys.executable, "-u", RUN_VQ1, "--controller", args.controller,
@@ -77,6 +95,15 @@ def run_attempt(attempt_id, args):
                  creationflags=(0x00000200 if os.name == "nt" else 0))  # NEW_PROCESS_GROUP
     q = Queue()
     Thread(target=_reader_thread, args=(proc.stdout, q), daemon=True).start()
+
+    # Save the FULL child output per attempt so we can read the [servo]/[hybrid]
+    # trace afterwards (the classifier only regex-scans lines; without this they're
+    # discarded and the flight is unrecoverable).
+    os.makedirs(args.logdir, exist_ok=True)
+    logpath = os.path.join(args.logdir, f"attempt_{attempt_id:04d}.log")
+    logf = open(logpath, "w", encoding="utf-8")
+    logf.write(f"# attempt {attempt_id}  controller={args.controller}  start={start_ts}\n")
+    logf.flush()
 
     go_seen = go_wall = None
     was_live = False
@@ -108,6 +135,8 @@ def run_attempt(attempt_id, args):
                 outcome, note = "ERROR", "process exited before GO"
             break
 
+        logf.write(line + "\n")   # full trace to the per-attempt log
+
         if not go_seen and RE_GO.search(line):
             go_seen, go_wall = True, time.time()
             continue
@@ -127,7 +156,9 @@ def run_attempt(attempt_id, args):
                 outcome, note = "FAILED", f"race ended at gate {max_gate} (next countdown armed)"
                 break
 
-    _kill_tree(proc)
+    _graceful_stop(proc)   # graceful (lets run_vq1 disarm) then hard-kill fallback
+    logf.write(f"# outcome={outcome} gates_passed={max_gate} note={note}\n")
+    logf.close()
     return {
         "attempt_id": attempt_id,
         "controller": args.controller,
@@ -138,6 +169,7 @@ def run_attempt(attempt_id, args):
         "race_finish_ns": finish,
         "duration_s": round(time.time() - start, 1),
         "note": note,
+        "log": logpath,
     }
 
 
@@ -156,6 +188,8 @@ def main():
                    help="which hardcoded controller to grind (default vision-servo)")
     p.add_argument("--port", type=int, default=14550)
     p.add_argument("--device", default=None, choices=[None, "cuda", "mps", "cpu"])
+    p.add_argument("--logdir", default=os.path.join(ROOT, "grind_logs"),
+                   help="per-attempt full flight logs are written here")
     args = p.parse_args()
 
     def _sigint(_s, _f):
@@ -165,8 +199,9 @@ def main():
     signal.signal(signal.SIGINT, _sigint)
 
     done = _count_existing(args.out)
+    print(f"[grind] controller={args.controller.upper()}  ->  run_vq1 --controller {args.controller}")
     print(f"[grind] logging to {args.out} (resuming at attempt #{done + 1}); "
-          f"{NUM_GATES} gates; Ctrl-C to stop.")
+          f"per-attempt flight logs in {args.logdir}/; {NUM_GATES} gates; Ctrl-C to stop.")
     n = 0
     completions = 0
     while not _stop and n < args.max_attempts:

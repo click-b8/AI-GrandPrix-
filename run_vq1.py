@@ -588,6 +588,20 @@ async def run(
                 "%d send errors occurred. Check UDP host/port and network connectivity.",
                 adapter.send_errors,
             )
+        # DISARM on graceful shutdown. We ARM at startup but never disarmed, which
+        # may leave the sim's drone/race stuck so it won't auto-arm the next race
+        # (grinder attempts 2+ then wait forever for a GO). Disarm to hand the sim a
+        # clean drone. Only runs on a GRACEFUL exit (normal end / SIGINT / SIGTERM),
+        # NOT a hard-kill -- so the grinder must terminate run_vq1 gracefully.
+        if sim_conn is not None:
+            try:
+                sim_conn.mav.command_long_send(
+                    sim_conn.target_system, sim_conn.target_component,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0, 0, 0, 0, 0, 0, 0, 0)   # param1=0 -> disarm
+                logger.info("DISARM sent on shutdown.")
+            except Exception as exc:
+                logger.warning("Disarm on shutdown failed: %s", exc)
         if _timesync is not None:
             _timesync.stop()
         if _mavlink_rx is not None:
@@ -660,6 +674,20 @@ if __name__ == "__main__":
     # Tests exercise this via subprocess, not just module-attribute
     # patching — see TestPackageStructure.test_cli_flag_actually_enables_stub.
     globals()['_allow_stub_vision'] = args.allow_stub_vision
+
+    # Treat SIGTERM / CTRL_BREAK as a GRACEFUL stop (raise KeyboardInterrupt) so the
+    # finally block runs and DISARMs -- lets the grinder end a race cleanly (giving
+    # the sim a disarmed drone to auto-arm the next race) instead of a hard-kill.
+    import signal as _signal
+
+    def _graceful_stop(*_):
+        raise KeyboardInterrupt
+    for _sig in ("SIGTERM", "SIGBREAK"):
+        if hasattr(_signal, _sig):
+            try:
+                _signal.signal(getattr(_signal, _sig), _graceful_stop)
+            except (ValueError, OSError):
+                pass
 
     asyncio.run(run(args.host, args.port, args.hz, args.vision_port,
                     args.log_trajectory, args.control_mode, args.device,
