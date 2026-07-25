@@ -564,27 +564,52 @@ class CourseSchedule:
         spawn = np.asarray(data["spawn"]["pos_cm"], float) / 100.0
         gates = [np.asarray(g["pos_cm"], float) / 100.0 for g in data["gates"]]
         pts = [spawn] + gates
-        # slopes[i] = signed slope (rad) of the segment pts[i]->pts[i+1], i.e. the
-        # segment ENDING at gate i (so active_gate=i selects slopes[i]). Negative
-        # slope = descending.
-        self.slopes = []
+        # Per-segment geometry. Segment i = pts[i]->pts[i+1] ENDS at gate i, so
+        # active_gate=i selects index i. slope<0 = descending.
+        self.slopes = []      # rad, signed
+        self.lengths = []     # m, 3D segment length (for the dead-reckon drift check)
+        self.vdrops = []      # m, vertical drop (+ = descends)
+        self.bearings = []    # deg, UE-XY heading of the segment (reference only)
         for i in range(len(pts) - 1):
             d = pts[i + 1] - pts[i]
             horiz = float(math.hypot(d[0], d[1]))
             self.slopes.append(math.atan2(float(d[2]), horiz) if horiz > 1e-6 else 0.0)
+            self.lengths.append(float(np.linalg.norm(d)))
+            self.vdrops.append(-float(d[2]))
+            self.bearings.append(math.degrees(math.atan2(float(d[1]), float(d[0]))))
         self.n_segments = len(self.slopes)
 
+    def _idx(self, active_gate):
+        return int(np.clip(active_gate if active_gate is not None else 0,
+                           0, self.n_segments - 1))
+
     def segment_slope_deg(self, active_gate):
-        i = int(np.clip(active_gate if active_gate is not None else 0,
-                        0, self.n_segments - 1))
-        return math.degrees(self.slopes[i])
+        return math.degrees(self.slopes[self._idx(active_gate)])
+
+    def segment_length(self, active_gate):
+        return self.lengths[self._idx(active_gate)]
+
+    def segment_vdrop(self, active_gate):
+        return self.vdrops[self._idx(active_gate)]
+
+    def bearing_deg(self, active_gate):
+        return self.bearings[self._idx(active_gate)]
+
+    def bearing_change_deg(self, active_gate):
+        """Heading change from the previous segment into this one (the only
+        commandable open-loop 'bearing' cue -- there is NO absolute heading
+        reference, so this is a turn feedforward at gate transitions, ~0 on this
+        near-straight course)."""
+        i = self._idx(active_gate)
+        if i == 0:
+            return 0.0
+        d = self.bearings[i] - self.bearings[i - 1]
+        return (d + 180.0) % 360.0 - 180.0
 
     def ff_thrust(self, active_gate):
         """Feedforward thrust for the current segment (abs thrust fraction)."""
-        i = int(np.clip(active_gate if active_gate is not None else 0,
-                        0, self.n_segments - 1))
-        slope = self.slopes[i]                       # rad, negative = descending
-        needed_sink = self.cruise_speed * math.tan(-slope)   # + = descend
+        slope = self.slopes[self._idx(active_gate)]           # rad, neg = descending
+        needed_sink = self.cruise_speed * math.tan(-slope)    # + = descend
         return thrust_for_sink(needed_sink)
 
 
@@ -768,9 +793,63 @@ class VisionServoController:
                            "des_pitch": des_pitch, "des_yaw": des_yaw}}
 
 
+def _kin_accel_frd(accel_frd, gravity_frd):
+    """Kinematic acceleration in FRD = specific force + gravity-down. Rest -> 0."""
+    return np.asarray(accel_frd, float) + np.asarray(gravity_frd, float)
+
+
+class DeadReckoner:
+    """PASSIVE IMU dead-reckoning -- DIAGNOSTIC ONLY, never in the control loop.
+
+    Integrates kinematic accel -> velocity -> along-track distance + altitude
+    drop, and is reset to ground truth on each active_gate advance (the sim's
+    gate-pass is truth; integration only estimates 'how far into this segment am
+    I'). We LOG the integrated distance vs the segment's KNOWN length so the
+    grinder data shows how badly it drifts -- confirming active_gate must lead and
+    integration can only ever be a within-segment fallback.
+
+    Drift is expected: with no heading reference and a -17.8 deg tilt, gravity
+    leaks into horizontal accel if the gravity estimate is even slightly off, and
+    double integration compounds it. That is exactly why this never drives
+    control -- it is here to be measured, not trusted.
+    """
+
+    def __init__(self):
+        self.reset_segment()
+        self.last_t = None
+        self.last_completed_drift = 0.0   # integrated - known length, at last advance
+
+    def reset_segment(self):
+        self.fwd_vel = 0.0
+        self.fwd_dist = 0.0
+        self.vsink_vel = 0.0
+        self.alt_drop = 0.0
+
+    def on_gate_advance(self, completed_segment_length):
+        self.last_completed_drift = self.fwd_dist - completed_segment_length
+        self.reset_segment()              # ground-truth reset for the new segment
+
+    def update(self, accel_frd, gravity_frd, now):
+        a = _kin_accel_frd(accel_frd, gravity_frd)          # FRD kinematic accel
+        g = np.asarray(gravity_frd, float)
+        gmag = float(np.linalg.norm(g))
+        up = -g / gmag if gmag > 1e-6 else np.array([0.0, 0.0, -1.0])
+        fwd_a = float(a[0])                                 # body-forward (FRD x)
+        vsink_a = -float(a @ up)                            # + = downward
+        if self.last_t is not None:
+            dt = min(max(now - self.last_t, 1e-4), 0.2)
+            self.fwd_vel += fwd_a * dt
+            self.fwd_dist += self.fwd_vel * dt
+            self.vsink_vel += vsink_a * dt
+            self.alt_drop += self.vsink_vel * dt
+        self.last_t = now
+        return self.fwd_dist, self.alt_drop
+
+
 class HybridController:
-    """Three-tier hybrid controller (SCAFFOLD -- glide feedforward uses the
-    PLACEHOLDER THRUST_SINK_MAP until the descent-rate probe numbers land).
+    """Three-tier hybrid controller. Glide feedforward from the MEASURED
+    THRUST_SINK_MAP; active_gate drives the segment schedule (NO dead-reckoning in
+    the control path -- a passive DeadReckoner logs drift for diagnostics only).
 
     Authority, highest first (see the blend law):
       GATE  -- detected big + centred (w_gate ramps with size)  -> precise u,v trim
@@ -791,6 +870,7 @@ class HybridController:
         self.detector = GateDetector(self.cfg)
         self.tube = TubeDetector(self.cfg)
         self.schedule = CourseSchedule(cruise_speed_mps or self.cfg.cruise_speed_mps)
+        self.dr = DeadReckoner()          # passive diagnostic (not in control)
         self._u_filt = 0.0
         self._v_filt = 0.0
         self._last_t = None
@@ -801,6 +881,8 @@ class HybridController:
         self._u_filt = 0.0
         self._v_filt = 0.0
         self._last_t = None
+        self.dr = DeadReckoner()
+        self._active_gate_prev = None
         logger.info("[hybrid] reset for fresh race")
 
     def command(self, frame_rgb, telemetry, active_gate=None, now=None):
@@ -809,10 +891,21 @@ class HybridController:
         gravity = telemetry.get("gravity_frd", (0.0, 0.0, 9.81))
         gyro = telemetry.get("velocity", (0.0, 0.0, 0.0))
 
+        # active_gate = the sim's ground-truth segment pointer. On advance: reset
+        # the passive dead-reckoner to the new segment and clear the derivative
+        # filters so a stale du/dv can't spike at the handoff.
         if active_gate is not None and active_gate != self._active_gate_prev:
             if self._active_gate_prev is not None:
-                logger.info("[hybrid] active_gate %s -> %s", self._active_gate_prev, active_gate)
+                self.dr.on_gate_advance(self.schedule.segment_length(self._active_gate_prev))
+                self._u_filt = 0.0
+                self._v_filt = 0.0
+                logger.info("[hybrid] active_gate %s -> %s  (DR drift on last seg = %+.1f m)",
+                            self._active_gate_prev, active_gate, self.dr.last_completed_drift)
             self._active_gate_prev = active_gate
+
+        # Passive dead-reckoning (DIAGNOSTIC ONLY -- logged, never used for control).
+        accel = telemetry.get("acceleration", (0.0, 0.0, 0.0))
+        dr_fwd, dr_drop = self.dr.update(accel, gravity, now)
 
         gate = self.detector.detect(frame_rgb)
         tube = self.tube.measure(frame_rgb)
@@ -869,16 +962,32 @@ class HybridController:
 
         roll_n, pitch_n, yaw_n = attitude_rates(c, des_roll, des_pitch, des_yaw, gravity, gyro)
 
+        # --- authority split (log FEEDFORWARD vs TRIM for BOTH channels) ---
+        # VERTICAL: ff_thrust (open-loop) vs trim_thrust (vision, +/- band).
+        # LATERAL:  ff is 'hold heading' (bearing-change cue ~0, no absolute ref),
+        #           so the whole lateral command is vision TRIM. Logging both lets
+        #           the histogram separate a bad SCHEDULE from bad VISION.
+        trim_thrust = -v_trim
+        ff_bearing = self.schedule.bearing_change_deg(active_gate)
+
         if now - self._last_log_t >= 0.1:
             self._last_log_t = now
             logger.info(
-                "[hybrid] g=%s wG=%.2f wT=%.2f u_ref=%+.3f slope=%+.1fdeg | ff_thr=%.3f "
-                "thr=%.3f | gate(sz=%.3f v=%+.3f) tube(u=%+.3f)",
-                active_gate, w_gate, w_tube, u_ref, self.schedule.segment_slope_deg(active_gate),
-                ff_thrust, thrust, gate.size_frac, gate.v_err, tube.u_tube)
+                "[hybrid] g=%s wG=%.2f wT=%.2f | LAT u=%+.3f uref=%+.3f ffB=%+.1fdeg "
+                "trim(r=%+.2f y=%+.2f) | VERT ff=%.3f trim=%+.3f thr=%.3f | DR fwd=%.1f/%.1fm "
+                "drop=%.1f/%.1fm",
+                active_gate, w_gate, w_tube, -gate_u if gate.found else 0.0, u_ref, ff_bearing,
+                roll_n * MAX_BODY_RATE, yaw_n * MAX_BODY_RATE,
+                ff_thrust, trim_thrust, thrust,
+                dr_fwd, self.schedule.segment_length(active_gate),
+                dr_drop, self.schedule.segment_vdrop(active_gate))
 
         return {"throttle": thrust, "roll": roll_n, "pitch": pitch_n, "yaw": yaw_n,
                 "_debug": {"w_gate": w_gate, "w_tube": w_tube, "u_ref": u_ref,
-                           "ff_thrust": ff_thrust, "gate_found": gate.found,
-                           "gate_size": gate.size_frac, "tube_found": tube.found,
-                           "des_roll": des_roll, "des_yaw": des_yaw}}
+                           "ff_thrust": ff_thrust, "trim_thrust": trim_thrust,
+                           "ff_bearing_change": ff_bearing,
+                           "gate_found": gate.found, "gate_size": gate.size_frac,
+                           "tube_found": tube.found, "des_roll": des_roll, "des_yaw": des_yaw,
+                           "dr_fwd_dist": dr_fwd, "dr_alt_drop": dr_drop,
+                           "seg_length": self.schedule.segment_length(active_gate),
+                           "dr_last_drift": self.dr.last_completed_drift}}

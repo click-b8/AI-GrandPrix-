@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vq1_vision_servo import (  # noqa: E402
     ServoConfig, VisionServoController, GateDetector, TubeDetector,
-    HybridController, CourseSchedule, thrust_for_sink, THRUST_SINK_MAP,
+    HybridController, CourseSchedule, DeadReckoner, thrust_for_sink, THRUST_SINK_MAP,
     gravity_to_roll_pitch, rgb_to_hsv_arrays,
 )
 
@@ -483,6 +483,52 @@ def test_hybrid_command_contract():
     assert 0.0 <= o["throttle"] <= 1.0
     for k in ("roll", "pitch", "yaw"):
         assert -1.0 <= o[k] <= 1.0
+
+
+def test_hybrid_inherits_mirror_fix():
+    # CONFIRM (don't assume): the hybrid applies the mirror (u_ctrl = -u_err).
+    # gate IMAGE-right (physically LEFT) -> u_ref<0 -> bank left.
+    o = HybridController().command(make_tube_frame(gate_cx=0.78, gate_sz=0.18),
+                                   telem(), active_gate=2)
+    assert o["_debug"]["u_ref"] < 0
+    assert o["_debug"]["des_roll"] < 0
+    # (plant calib lives in dcl_mavlink_adapter.wire_body_rate, applied to every
+    #  command_source incl. hybrid -- covered by tests/test_plant_calib.py.)
+
+
+def test_hybrid_ff_trim_split_exposed():
+    o = HybridController().command(make_tube_frame(gate_cx=0.5, gate_sz=0.18),
+                                   telem(), active_gate=1)
+    d = o["_debug"]
+    for k in ("ff_thrust", "trim_thrust", "dr_fwd_dist", "dr_alt_drop", "seg_length"):
+        assert k in d
+    # thrust = ff_thrust + trim_thrust (trim_thrust = -v_trim), within the safety clamp
+    assert abs(o["throttle"] - (d["ff_thrust"] + d["trim_thrust"])) < 1e-6
+
+
+def test_hybrid_deadreckoner_is_passive():
+    # DIFFERENT acceleration must NOT change the control output (DR is diagnostic).
+    base = {"gravity_frd": (2.999, 0.0, 9.340), "velocity": (0.0, 0.0, 0.0)}
+    t1 = dict(base, acceleration=(0.0, 0.0, -9.81))
+    t2 = dict(base, acceleration=(5.0, 2.0, -14.0))   # wildly different accel
+    frame = make_tube_frame(gate_cx=0.5, gate_sz=0.18)
+    o1 = HybridController().command(frame, t1, active_gate=1, now=100.0)
+    o2 = HybridController().command(frame, t2, active_gate=1, now=100.0)
+    for k in ("throttle", "roll", "pitch", "yaw"):
+        assert abs(o1[k] - o2[k]) < 1e-9, f"accel changed control on {k}"
+
+
+def test_deadreckoner_integrates_and_resets_on_advance():
+    dr = DeadReckoner()
+    g = (0.0, 0.0, 9.81)
+    # constant forward kinematic accel (accel_x + gravity_x = 2.0) for 1 s
+    for i in range(1, 101):
+        dr.update((2.0, 0.0, -9.81), g, now=100.0 + i * 0.01)
+    assert dr.fwd_dist > 0.5           # integrated some forward distance
+    before = dr.fwd_dist
+    dr.on_gate_advance(completed_segment_length=0.7)
+    assert abs(dr.last_completed_drift - (before - 0.7)) < 1e-9   # drift recorded
+    assert dr.fwd_dist == 0.0          # reset to ground truth for the new segment
 
 
 if __name__ == "__main__":
