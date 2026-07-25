@@ -518,6 +518,31 @@ def test_hybrid_deadreckoner_is_passive():
         assert abs(o1[k] - o2[k]) < 1e-9, f"accel changed control on {k}"
 
 
+def test_hybrid_active_gate_leads_schedule():
+    # active_gate (ground truth) advances the schedule immediately; it never retreats.
+    h = HybridController()
+    o0 = h.command(make_tube_frame(gate_cx=None), telem(), active_gate=0, now=0.0)
+    assert o0["_debug"]["sched_gate"] == 0
+    o3 = h.command(make_tube_frame(gate_cx=None), telem(), active_gate=3, now=0.5)
+    assert o3["_debug"]["sched_gate"] == 3          # adopts ground truth
+    o1 = h.command(make_tube_frame(gate_cx=None), telem(), active_gate=1, now=0.6)
+    assert o1["_debug"]["sched_gate"] == 3          # never retreats below what we've seen
+
+
+def test_hybrid_safety_timeout_advances_when_active_gate_stalls():
+    h = HybridController()
+    cfg = ServoConfig()
+    seg_time = h.schedule.segment_length(0) / cfg.cruise_speed_mps
+    timeout = cfg.hybrid_seg_timeout_mult * seg_time
+    h.command(make_tube_frame(gate_cx=None), telem(), active_gate=0, now=0.0)
+    # active_gate stuck at 0. Before the timeout -> still segment 0.
+    o = h.command(make_tube_frame(gate_cx=None), telem(), active_gate=0, now=timeout * 0.9)
+    assert o["_debug"]["sched_gate"] == 0
+    # Past the timeout -> schedule advances anyway (missed-gate safety).
+    o2 = h.command(make_tube_frame(gate_cx=None), telem(), active_gate=0, now=timeout * 1.1)
+    assert o2["_debug"]["sched_gate"] == 1
+
+
 def test_deadreckoner_integrates_and_resets_on_advance():
     dr = DeadReckoner()
     g = (0.0, 0.0, 9.81)

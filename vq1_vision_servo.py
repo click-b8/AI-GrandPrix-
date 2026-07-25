@@ -247,6 +247,11 @@ class ServoConfig:
     hybrid_v_trim_band: float = 0.03  # vision v-error may only move thrust +/- this much
                                       # around the feedforward glide. FEEDFORWARD carries the
                                       # descent (slope is shallow); vision trims residual only.
+    hybrid_seg_timeout_mult: float = 2.5  # SAFETY: if active_gate hasn't advanced in
+                                      # (segment_time * this), advance the schedule anyway so
+                                      # a missed gate can't stall the controller forever.
+                                      # active_gate (ground truth) still LEADS; this only
+                                      # covers a stall, never an early drift-driven advance.
 
     # bookkeeping (not a knob)
     name: str = "vq1-vision-servo-v0"
@@ -874,7 +879,8 @@ class HybridController:
         self._u_filt = 0.0
         self._v_filt = 0.0
         self._last_t = None
-        self._active_gate_prev = None
+        self._sched_gate = 0              # internal schedule segment (active_gate LEADS it;
+        self._sched_gate_t = None         # timeout only advances it, never retreats)
         self._last_log_t = -1e9
 
     def reset(self):
@@ -882,7 +888,8 @@ class HybridController:
         self._v_filt = 0.0
         self._last_t = None
         self.dr = DeadReckoner()
-        self._active_gate_prev = None
+        self._sched_gate = 0
+        self._sched_gate_t = None
         logger.info("[hybrid] reset for fresh race")
 
     def command(self, frame_rgb, telemetry, active_gate=None, now=None):
@@ -891,21 +898,39 @@ class HybridController:
         gravity = telemetry.get("gravity_frd", (0.0, 0.0, 9.81))
         gyro = telemetry.get("velocity", (0.0, 0.0, 0.0))
 
-        # active_gate = the sim's ground-truth segment pointer. On advance: reset
-        # the passive dead-reckoner to the new segment and clear the derivative
-        # filters so a stale du/dv can't spike at the handoff.
-        if active_gate is not None and active_gate != self._active_gate_prev:
-            if self._active_gate_prev is not None:
-                self.dr.on_gate_advance(self.schedule.segment_length(self._active_gate_prev))
-                self._u_filt = 0.0
-                self._v_filt = 0.0
-                logger.info("[hybrid] active_gate %s -> %s  (DR drift on last seg = %+.1f m)",
-                            self._active_gate_prev, active_gate, self.dr.last_completed_drift)
-            self._active_gate_prev = active_gate
+        if self._sched_gate_t is None:
+            self._sched_gate_t = now
+
+        # SEGMENT POINTER (Option A). active_gate = sim ground truth LEADS; the
+        # internal _sched_gate only ADVANCES (never retreats, never early). A
+        # ground-truth advance is adopted immediately; else a SAFETY TIMEOUT
+        # advances one segment if active_gate has stalled past segment_time*mult
+        # (covers a missed gate so the controller can't stall on segment N forever).
+        prev_seg = self._sched_gate
+        seg_time = (self.schedule.segment_length(self._sched_gate)
+                    / max(c.cruise_speed_mps, 1e-3))
+        adv_reason = None
+        if active_gate is not None and active_gate > self._sched_gate:
+            self._sched_gate = int(active_gate)
+            adv_reason = "active_gate"
+        elif ((now - self._sched_gate_t) > c.hybrid_seg_timeout_mult * seg_time
+              and self._sched_gate < self.schedule.n_segments - 1):
+            self._sched_gate += 1
+            adv_reason = "TIMEOUT"
+        if adv_reason is not None:
+            self.dr.on_gate_advance(self.schedule.segment_length(prev_seg))
+            self._u_filt = 0.0
+            self._v_filt = 0.0
+            self._sched_gate_t = now
+            logger.info("[hybrid] segment %s -> %s (%s)  DR drift on last seg = %+.1f m",
+                        prev_seg, self._sched_gate, adv_reason, self.dr.last_completed_drift)
 
         # Passive dead-reckoning (DIAGNOSTIC ONLY -- logged, never used for control).
         accel = telemetry.get("acceleration", (0.0, 0.0, 0.0))
         dr_fwd, dr_drop = self.dr.update(accel, gravity, now)
+        seg = self._sched_gate                    # effective schedule segment
+        seg_len = self.schedule.segment_length(seg)
+        within_frac = dr_fwd / seg_len if seg_len > 1e-6 else 0.0   # integration = fraction only
 
         gate = self.detector.detect(frame_rgb)
         tube = self.tube.measure(frame_rgb)
@@ -948,7 +973,7 @@ class HybridController:
 
         # --- vertical: FEEDFORWARD glide dominates; vision v-error trims within a
         #     small band (+/- hybrid_v_trim_band) around the feedforward thrust. ---
-        ff_thrust = self.schedule.ff_thrust(active_gate)
+        ff_thrust = self.schedule.ff_thrust(seg)
         if gate.found:
             v_trim = w_gate * (c.k_thrust_v * gate.v_err + c.kd_v * dv)
             v_trim = float(np.clip(v_trim, -c.hybrid_v_trim_band, c.hybrid_v_trim_band))
@@ -964,30 +989,30 @@ class HybridController:
 
         # --- authority split (log FEEDFORWARD vs TRIM for BOTH channels) ---
         # VERTICAL: ff_thrust (open-loop) vs trim_thrust (vision, +/- band).
-        # LATERAL:  ff is 'hold heading' (bearing-change cue ~0, no absolute ref),
-        #           so the whole lateral command is vision TRIM. Logging both lets
-        #           the histogram separate a bad SCHEDULE from bad VISION.
+        # LATERAL:  ff_yaw_rate = 0 (hold heading -- no absolute reference), so the
+        #           whole lateral command is vision TRIM. bearing-change is a cue
+        #           only. Logging both lets the histogram split SCHEDULE vs VISION.
         trim_thrust = -v_trim
-        ff_bearing = self.schedule.bearing_change_deg(active_gate)
+        ff_yaw_rate = 0.0
+        ff_bearing = self.schedule.bearing_change_deg(seg)
 
         if now - self._last_log_t >= 0.1:
             self._last_log_t = now
             logger.info(
-                "[hybrid] g=%s wG=%.2f wT=%.2f | LAT u=%+.3f uref=%+.3f ffB=%+.1fdeg "
-                "trim(r=%+.2f y=%+.2f) | VERT ff=%.3f trim=%+.3f thr=%.3f | DR fwd=%.1f/%.1fm "
-                "drop=%.1f/%.1fm",
-                active_gate, w_gate, w_tube, -gate_u if gate.found else 0.0, u_ref, ff_bearing,
-                roll_n * MAX_BODY_RATE, yaw_n * MAX_BODY_RATE,
+                "[hybrid] g=%s seg=%d frac=%.2f wG=%.2f wT=%.2f | LAT uref=%+.3f "
+                "ff_yaw=%+.2f trim(r=%+.2f y=%+.2f) ffB=%+.1fdeg | VERT ff=%.3f trim=%+.3f "
+                "thr=%.3f | DR fwd=%.1f/%.1fm drop=%.1f/%.1fm",
+                active_gate, seg, within_frac, w_gate, w_tube, u_ref,
+                ff_yaw_rate, roll_n * MAX_BODY_RATE, yaw_n * MAX_BODY_RATE, ff_bearing,
                 ff_thrust, trim_thrust, thrust,
-                dr_fwd, self.schedule.segment_length(active_gate),
-                dr_drop, self.schedule.segment_vdrop(active_gate))
+                dr_fwd, seg_len, dr_drop, self.schedule.segment_vdrop(seg))
 
         return {"throttle": thrust, "roll": roll_n, "pitch": pitch_n, "yaw": yaw_n,
-                "_debug": {"w_gate": w_gate, "w_tube": w_tube, "u_ref": u_ref,
-                           "ff_thrust": ff_thrust, "trim_thrust": trim_thrust,
-                           "ff_bearing_change": ff_bearing,
+                "_debug": {"active_gate": active_gate, "sched_gate": seg,
+                           "within_frac": within_frac, "w_gate": w_gate, "w_tube": w_tube,
+                           "u_ref": u_ref, "ff_thrust": ff_thrust, "trim_thrust": trim_thrust,
+                           "ff_yaw_rate": ff_yaw_rate, "ff_bearing_change": ff_bearing,
                            "gate_found": gate.found, "gate_size": gate.size_frac,
                            "tube_found": tube.found, "des_roll": des_roll, "des_yaw": des_yaw,
                            "dr_fwd_dist": dr_fwd, "dr_alt_drop": dr_drop,
-                           "seg_length": self.schedule.segment_length(active_gate),
-                           "dr_last_drift": self.dr.last_completed_drift}}
+                           "seg_length": seg_len, "dr_last_drift": self.dr.last_completed_drift}}
