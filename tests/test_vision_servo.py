@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vq1_vision_servo import (  # noqa: E402
     ServoConfig, VisionServoController, GateDetector, TubeDetector,
+    HybridController, CourseSchedule, thrust_for_sink, THRUST_SINK_MAP,
     gravity_to_roll_pitch, rgb_to_hsv_arrays,
 )
 
@@ -393,6 +394,81 @@ def test_command_contract_keys_and_ranges():
     assert 0.0 <= cmd["throttle"] <= 1.0
     for k in ("roll", "pitch", "yaw"):
         assert -1.0 <= cmd[k] <= 1.0
+
+
+# --------------------------------------------------------------------------
+# Hybrid controller: THRUST_SINK_MAP, CourseSchedule, three-tier blend
+# --------------------------------------------------------------------------
+def make_tube_frame(gate_cx=None, gate_sz=0.16, tube=True, w=640, h=360):
+    f = np.full((h, w, 3), 20, dtype=np.uint8)
+    if tube:
+        f[:, 300:340] = TUBE_CYAN
+    if gate_cx is not None:
+        add_square(f, gate_cx, 0.5, gate_sz)
+    return f
+
+
+def test_thrust_for_sink_interp_and_clamp():
+    # exact points, a midpoint, and clamping outside the range
+    assert abs(thrust_for_sink(0.0) - 0.29) < 1e-9
+    assert abs(thrust_for_sink(2.0) - 0.23) < 1e-9
+    assert 0.23 < thrust_for_sink(1.5) < 0.26        # interpolated
+    assert thrust_for_sink(99) == THRUST_SINK_MAP[-1][0]   # clamp to max sink -> min thrust
+    assert thrust_for_sink(-5) == THRUST_SINK_MAP[0][0]    # climb clamps to hover thrust
+
+
+def test_course_schedule_staircase():
+    sch = CourseSchedule(cruise_speed_mps=10.0)
+    assert sch.n_segments == 6
+    slopes = [sch.segment_slope_deg(i) for i in range(6)]
+    # level in, steep middle, level out
+    assert slopes[0] > -3 and slopes[4] > -3 and slopes[5] > -3      # level segments
+    assert slopes[1] < -10 and slopes[2] < -15 and slopes[3] < -14   # steep middle
+
+
+def test_course_schedule_ff_thrust_descends_on_steep():
+    sch = CourseSchedule(cruise_speed_mps=10.0)
+    level = sch.ff_thrust(0)     # spawn->G1, ~level
+    steep = sch.ff_thrust(2)     # G2->G3, steepest
+    assert steep < level         # steeper segment commands LESS thrust (descend)
+    assert level >= 0.28         # level ~ hover
+
+
+def test_hybrid_gate_dominates_when_big():
+    h = HybridController()
+    # big gate image-right (physically LEFT via mirror) + tube -> gate wins, bank left
+    o = h.command(make_tube_frame(gate_cx=0.75, gate_sz=0.18), telem(), active_gate=2)
+    assert o["_debug"]["w_gate"] > 0.9
+    assert o["_debug"]["u_ref"] < 0                  # gate (mirror-corrected) dominates
+    assert o["_debug"]["des_roll"] < 0               # bank left toward physical gate
+
+
+def test_hybrid_tube_when_no_gate():
+    h = HybridController()
+    # tube offset to the image-right, no gate -> tube lane-keeps
+    frame = np.full((360, 640, 3), 20, dtype=np.uint8)
+    frame[:, 420:470] = TUBE_CYAN                     # tube right of center
+    o = h.command(frame, telem(), active_gate=1)
+    assert o["_debug"]["w_gate"] == 0.0
+    assert o["_debug"]["w_tube"] == 1.0
+    assert abs(o["_debug"]["u_ref"]) > 0.05           # follows the tube, not zero
+
+
+def test_hybrid_ff_thrust_matches_segment():
+    h = HybridController()
+    # no gate -> thrust IS the segment feedforward (within the clamp)
+    lvl = h.command(make_tube_frame(gate_cx=None), telem(), active_gate=0)["throttle"]
+    stp = HybridController().command(make_tube_frame(gate_cx=None), telem(), active_gate=2)["throttle"]
+    assert stp < lvl                                  # steep segment descends harder
+
+
+def test_hybrid_command_contract():
+    o = HybridController().command(make_tube_frame(gate_cx=0.5), telem(), active_gate=1)
+    for k in ("throttle", "roll", "pitch", "yaw"):
+        assert k in o
+    assert 0.0 <= o["throttle"] <= 1.0
+    for k in ("roll", "pitch", "yaw"):
+        assert -1.0 <= o[k] <= 1.0
 
 
 if __name__ == "__main__":

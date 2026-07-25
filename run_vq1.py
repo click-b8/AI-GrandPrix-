@@ -439,12 +439,14 @@ async def run(
     from dcl_mavlink_adapter import SCUBALabMAVLinkAdapter, DCLTimesync
 
     use_vision_servo = (controller == "vision-servo")
-    if use_vision_servo:
+    use_hybrid = (controller == "hybrid")
+    use_hardcoded = use_vision_servo or use_hybrid
+    if use_hardcoded:
         logger.warning(
-            "[CONTROLLER] HARDCODED vision-servo (NO RL model). Gate detection + "
-            "guidance gains are UNTUNED against the real sim — calibrate first "
-            "(tools/vision_servo_dryrun.py on a real frame; --hover-probe for the "
-            "hover fraction). See vq1_vision_servo.py CALIBRATE banner."
+            "[CONTROLLER] HARDCODED %s (NO RL model). Gate detection + guidance are "
+            "tuned/UNTUNED against the real sim -- for hybrid, the glide feedforward "
+            "uses PLACEHOLDER THRUST_SINK_MAP until the descent-rate probe lands.",
+            controller,
         )
     elif hover_probe is not None:
         logger.warning(
@@ -507,9 +509,13 @@ async def run(
     # gravity+gyro from _latest_telemetry, and the sequencing gate from
     # _active_gate. Resets on the GO edge so a prior race can't bleed in.
     command_source = None
-    if use_vision_servo:
-        from vq1_vision_servo import VisionServoController
-        _servo = VisionServoController()
+    if use_hardcoded:
+        if use_hybrid:
+            from vq1_vision_servo import HybridController
+            _servo = HybridController()
+        else:
+            from vq1_vision_servo import VisionServoController
+            _servo = VisionServoController()
         _servo_prev_race = {"flag": False}
 
         def command_source():
@@ -605,11 +611,12 @@ if __name__ == "__main__":
                         help="attitude/rates: SET_ATTITUDE_TARGET type_mask=128 (CTBR); "
                              "actuator: SET_ACTUATOR_CONTROL_TARGET group 0 at --hz")
     parser.add_argument("--controller", default="model",
-                        choices=["model", "vision-servo"],
-                        help="model: distilled RL policy (default, needs the model + "
-                             "vision frames). vision-servo: HARDCODED gate-centering "
-                             "controller, no RL (vq1_vision_servo.py). Reuses the same "
-                             "arm/TIMESYNC/GO/SET_ATTITUDE_TARGET path.")
+                        choices=["model", "vision-servo", "hybrid"],
+                        help="model: distilled RL policy. vision-servo: HARDCODED "
+                             "gate-centering (vq1_vision_servo.py). hybrid: three-tier "
+                             "open-loop glide + tube lane-keeping + gate trim (uses the "
+                             "THRUST_SINK_MAP; scaffold until descent-probe numbers land). "
+                             "All reuse the same arm/TIMESYNC/GO/SET_ATTITUDE_TARGET path.")
     parser.add_argument("--vision-port", type=int, default=5600,
                         help="UDP port for DCL FPV vision stream (VADR-TS-002 s4.6, default 5600)")
     parser.add_argument(

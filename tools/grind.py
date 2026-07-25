@@ -66,7 +66,7 @@ _stop = False
 
 def run_attempt(attempt_id, args):
     """One race: launch run_vq1, watch its log, classify the outcome, kill it."""
-    cmd = [sys.executable, "-u", RUN_VQ1, "--controller", "vision-servo",
+    cmd = [sys.executable, "-u", RUN_VQ1, "--controller", args.controller,
            "--port", str(args.port)]
     if args.device:
         cmd += ["--device", args.device]
@@ -130,7 +130,7 @@ def run_attempt(attempt_id, args):
     _kill_tree(proc)
     return {
         "attempt_id": attempt_id,
-        "controller": "vision-servo",
+        "controller": args.controller,
         "start_ts": start_ts,
         "end_ts": _utcnow(),
         "outcome": outcome,
@@ -151,6 +151,9 @@ def main():
                     help="fallback TIMEOUT if a race stays live this long (DCL default 480)")
     p.add_argument("--settle", type=float, default=3.0,
                     help="pause after kill before relaunch, so the sim/port settle")
+    p.add_argument("--controller", default="vision-servo",
+                   choices=["vision-servo", "hybrid"],
+                   help="which hardcoded controller to grind (default vision-servo)")
     p.add_argument("--port", type=int, default=14550)
     p.add_argument("--device", default=None, choices=[None, "cuda", "mps", "cpu"])
     args = p.parse_args()

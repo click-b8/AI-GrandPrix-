@@ -50,8 +50,10 @@ downstream in dcl_mavlink_adapter.py).
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -61,6 +63,34 @@ logger = logging.getLogger("vq1_vision_servo")
 
 # Must match dcl_mavlink_adapter.MAX_BODY_RATE — normalised rate 1.0 == this rad/s.
 MAX_BODY_RATE = 12.0
+
+# ===========================================================================
+# THRUST -> SINK-RATE MAP  (the ONE table to update from measurements)
+# ---------------------------------------------------------------------------
+# Points: (thrust_fraction, steady_sink_rate_m_s). sink > 0 = descending.
+# Monotone: lower thrust -> more sink. Linearly interpolated (np.interp), so
+# refining a point -- or adding a 5th -- is a ONE-LINE data change here; the
+# control logic never changes.
+#
+# *** PLACEHOLDER VALUES *** -- replace with the descent-rate probe results:
+#   run_vq1.py --hover-probe 0.29 / 0.26 / 0.23 / 0.20  and read each DONE line's
+#   SINK RATE. Nominal guess below assumes ~0.03 thrust per 1 m/s of sink.
+THRUST_SINK_MAP = [
+    (0.29, 0.0),   # ~hover (measured hover ~0.27-0.29)  <- replace
+    (0.26, 1.0),   # PLACEHOLDER                          <- replace
+    (0.23, 2.0),   # PLACEHOLDER                          <- replace
+    (0.20, 3.0),   # PLACEHOLDER                          <- replace
+]
+
+
+def thrust_for_sink(sink_rate: float) -> float:
+    """Inverse-interpolate THRUST_SINK_MAP: needed sink rate (m/s, + = down) ->
+    thrust fraction. Clamped to the map's range (np.interp returns the endpoints
+    outside it). A needed CLIMB (sink < 0) maps to the highest-thrust point."""
+    pts = sorted(THRUST_SINK_MAP, key=lambda p: p[1])   # ascending sink
+    sinks = [p[1] for p in pts]
+    thrusts = [p[0] for p in pts]
+    return float(np.interp(sink_rate, sinks, thrusts))
 
 # Measured resting/spawn body pitch on v3385 (nose-down). cruise_pitch_deg must
 # stay near this or the attitude loop holds a constant pitch correction and the
@@ -206,6 +236,13 @@ class ServoConfig:
     search_timeout_s: float = 2.0     # after this long with NO gate, stop searching: level
                                       # wings, zero yaw, level pitch, hold hover. A stationary
                                       # drone that can still see beats corkscrewing off-course.
+
+    # ---- hybrid controller (three-tier blend: gate / tube / feedforward) ----
+    cruise_speed_mps: float = 10.0    # forward-speed estimate for glide feedforward
+                                      # (~161 m in ~15 s). Vision-trim absorbs the error.
+    hybrid_gate_s_lo: float = 0.05    # gate size where gate-authority (w_gate) starts ramping
+    hybrid_gate_s_hi: float = 0.15    # gate size for FULL gate authority (precise pass)
+    hybrid_tube_area_min: float = 0.01  # tube masked-area frac to count as "visible"
 
     # bookkeeping (not a knob)
     name: str = "vq1-vision-servo-v0"
@@ -468,6 +505,85 @@ def gravity_to_roll_pitch(gravity_frd):
     return roll, pitch
 
 
+def attitude_rates(cfg, des_roll, des_pitch, des_yaw_rate_norm, gravity_frd, gyro):
+    """PD from measured (gravity-derived) roll/pitch to normalised body rates.
+    des_* angles in rad; des_yaw_rate_norm already normalised [-1,1]. Shared by
+    VisionServoController and HybridController."""
+    roll, pitch = gravity_to_roll_pitch(gravity_frd)
+    p, q, r = float(gyro[0]), float(gyro[1]), float(gyro[2])
+
+    roll_rate = cfg.kp_att * (des_roll - roll) - cfg.kd_att * p       # rad/s
+    pitch_rate = cfg.kp_att * (des_pitch - pitch) - cfg.kd_att * q    # rad/s
+    yaw_rate = des_yaw_rate_norm * MAX_BODY_RATE - cfg.kd_yaw * r     # rad/s
+
+    # Clamp the COMMANDED rate to max_cmd_rate_rad_s (normalised limit).
+    lim = cfg.max_cmd_rate_rad_s / MAX_BODY_RATE
+    roll_n = float(np.clip(roll_rate / MAX_BODY_RATE, -lim, lim))
+    pitch_n = float(np.clip(pitch_rate / MAX_BODY_RATE, -lim, lim))
+    yaw_n = float(np.clip(yaw_rate / MAX_BODY_RATE, -lim, lim))
+    return roll_n, pitch_n, yaw_n
+
+
+def _warn_cruise_pitch(cfg):
+    """Loud guard (flight-5 class error): cruise_pitch far from the spawn attitude
+    makes the attitude loop hold a constant pitch correction. Shared by both
+    controllers."""
+    dp = cfg.cruise_pitch_deg - SPAWN_PITCH_DEG
+    if abs(dp) > CRUISE_PITCH_TOL_DEG:
+        logger.warning(
+            "[servo] *** cruise_pitch_deg=%.1f is %+.1f deg from the ~%.1f deg SPAWN "
+            "attitude -- the attitude loop will hold a CONSTANT ~%+.1f deg pitch "
+            "correction (climb + back up, NOT fly the course). Set cruise_pitch_deg "
+            "near %.1f. ***", cfg.cruise_pitch_deg, dp, SPAWN_PITCH_DEG, dp, SPAWN_PITCH_DEG)
+
+
+_COURSE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "course_gates_cm.json")
+
+
+class CourseSchedule:
+    """Per-segment glide feedforward from the known course (course_gates_cm.json).
+
+    The course descends as a STAIRCASE (level in, ~-12..-17 deg middle, ~-2 deg
+    out). For the segment toward the current target gate (index = active_gate),
+    returns the feedforward THRUST that produces that segment's descent, via the
+    THRUST_SINK_MAP lookup: needed_sink = cruise_speed * tan(descent_angle).
+
+    Slopes are computed from the gate geometry; only the thrust<->sink numbers are
+    a calibration (THRUST_SINK_MAP), so refining them never touches this class.
+    """
+
+    def __init__(self, cruise_speed_mps=10.0, path=_COURSE_PATH):
+        self.cruise_speed = float(cruise_speed_mps)
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        spawn = np.asarray(data["spawn"]["pos_cm"], float) / 100.0
+        gates = [np.asarray(g["pos_cm"], float) / 100.0 for g in data["gates"]]
+        pts = [spawn] + gates
+        # slopes[i] = signed slope (rad) of the segment pts[i]->pts[i+1], i.e. the
+        # segment ENDING at gate i (so active_gate=i selects slopes[i]). Negative
+        # slope = descending.
+        self.slopes = []
+        for i in range(len(pts) - 1):
+            d = pts[i + 1] - pts[i]
+            horiz = float(math.hypot(d[0], d[1]))
+            self.slopes.append(math.atan2(float(d[2]), horiz) if horiz > 1e-6 else 0.0)
+        self.n_segments = len(self.slopes)
+
+    def segment_slope_deg(self, active_gate):
+        i = int(np.clip(active_gate if active_gate is not None else 0,
+                        0, self.n_segments - 1))
+        return math.degrees(self.slopes[i])
+
+    def ff_thrust(self, active_gate):
+        """Feedforward thrust for the current segment (abs thrust fraction)."""
+        i = int(np.clip(active_gate if active_gate is not None else 0,
+                        0, self.n_segments - 1))
+        slope = self.slopes[i]                       # rad, negative = descending
+        needed_sink = self.cruise_speed * math.tan(-slope)   # + = descend
+        return thrust_for_sink(needed_sink)
+
+
 class VisionServoController:
     """Hand-written outer (vision) + inner (IMU attitude) controller.
 
@@ -479,17 +595,7 @@ class VisionServoController:
 
     def __init__(self, cfg: ServoConfig | None = None):
         self.cfg = cfg or ServoConfig()
-        # Loud guard: cruise_pitch far from the spawn attitude makes the attitude
-        # loop hold a constant pitch correction (flight-5 class error). Impossible
-        # to make silently now.
-        _dp = self.cfg.cruise_pitch_deg - SPAWN_PITCH_DEG
-        if abs(_dp) > CRUISE_PITCH_TOL_DEG:
-            logger.warning(
-                "[servo] *** cruise_pitch_deg=%.1f is %+.1f deg from the ~%.1f deg "
-                "SPAWN attitude -- the attitude loop will hold a CONSTANT ~%+.1f deg "
-                "pitch correction (climb + back up, NOT fly the course). Set "
-                "cruise_pitch_deg near %.1f. ***",
-                self.cfg.cruise_pitch_deg, _dp, SPAWN_PITCH_DEG, _dp, SPAWN_PITCH_DEG)
+        _warn_cruise_pitch(self.cfg)
         self.detector = GateDetector(self.cfg)
         self.tube = TubeDetector(self.cfg)   # measurement only; not yet in command()
         self._last_seen_t = -1e9
@@ -521,23 +627,8 @@ class VisionServoController:
     # -- inner loop ---------------------------------------------------------
     def _attitude_rates(self, des_roll, des_pitch, des_yaw_rate_norm,
                         gravity_frd, gyro):
-        """PD from measured (gravity-derived) roll/pitch to normalised body rates.
-        des_* angles in rad; des_yaw_rate_norm already normalised [-1,1]."""
-        c = self.cfg
-        roll, pitch = gravity_to_roll_pitch(gravity_frd)
-        p, q, r = float(gyro[0]), float(gyro[1]), float(gyro[2])
-
-        roll_rate = c.kp_att * (des_roll - roll) - c.kd_att * p       # rad/s
-        pitch_rate = c.kp_att * (des_pitch - pitch) - c.kd_att * q    # rad/s
-        yaw_rate = des_yaw_rate_norm * MAX_BODY_RATE - c.kd_yaw * r   # rad/s
-
-        # Clamp the COMMANDED rate to max_cmd_rate_rad_s (normalised limit), not the
-        # full +/-1 (=+/-MAX_BODY_RATE). Caps authority for gate centring.
-        lim = c.max_cmd_rate_rad_s / MAX_BODY_RATE
-        roll_n = float(np.clip(roll_rate / MAX_BODY_RATE, -lim, lim))
-        pitch_n = float(np.clip(pitch_rate / MAX_BODY_RATE, -lim, lim))
-        yaw_n = float(np.clip(yaw_rate / MAX_BODY_RATE, -lim, lim))
-        return roll_n, pitch_n, yaw_n
+        return attitude_rates(self.cfg, des_roll, des_pitch, des_yaw_rate_norm,
+                              gravity_frd, gyro)
 
     # -- full step ----------------------------------------------------------
     def command(self, frame_rgb, telemetry, active_gate=None, now=None):
@@ -671,3 +762,115 @@ class VisionServoController:
                            "u_err": det.u_err, "u_ctrl": u_ctrl, "v_err": det.v_err,
                            "size": det.size_frac, "des_roll": des_roll,
                            "des_pitch": des_pitch, "des_yaw": des_yaw}}
+
+
+class HybridController:
+    """Three-tier hybrid controller (SCAFFOLD -- glide feedforward uses the
+    PLACEHOLDER THRUST_SINK_MAP until the descent-rate probe numbers land).
+
+    Authority, highest first (see the blend law):
+      GATE  -- detected big + centred (w_gate ramps with size)  -> precise u,v trim
+      TUBE  -- visible, continuous lane                         -> lateral u trim
+      FEEDFORWARD -- known-path glide (thrust) + heading hold   -> backbone
+
+        u_ref  = w_gate*gate_u + (1-w_gate)*w_tube*tube_u        (mirror-corrected)
+        thrust = CourseSchedule.ff_thrust(active_gate) - w_gate*(k_thrust_v*gate_v + kd_v*dv)
+
+    Gate detection, the mirror fix, the attitude inner loop, the thrust clamp, and
+    the filtered PD derivative are reused from the vision servo. Same command
+    contract: command(frame, telemetry, active_gate) -> {throttle,roll,pitch,yaw}.
+    """
+
+    def __init__(self, cfg: ServoConfig | None = None, cruise_speed_mps=None):
+        self.cfg = cfg or ServoConfig()
+        _warn_cruise_pitch(self.cfg)
+        self.detector = GateDetector(self.cfg)
+        self.tube = TubeDetector(self.cfg)
+        self.schedule = CourseSchedule(cruise_speed_mps or self.cfg.cruise_speed_mps)
+        self._u_filt = 0.0
+        self._v_filt = 0.0
+        self._last_t = None
+        self._active_gate_prev = None
+        self._last_log_t = -1e9
+
+    def reset(self):
+        self._u_filt = 0.0
+        self._v_filt = 0.0
+        self._last_t = None
+        logger.info("[hybrid] reset for fresh race")
+
+    def command(self, frame_rgb, telemetry, active_gate=None, now=None):
+        c = self.cfg
+        now = time.time() if now is None else now
+        gravity = telemetry.get("gravity_frd", (0.0, 0.0, 9.81))
+        gyro = telemetry.get("velocity", (0.0, 0.0, 0.0))
+
+        if active_gate is not None and active_gate != self._active_gate_prev:
+            if self._active_gate_prev is not None:
+                logger.info("[hybrid] active_gate %s -> %s", self._active_gate_prev, active_gate)
+            self._active_gate_prev = active_gate
+
+        gate = self.detector.detect(frame_rgb)
+        tube = self.tube.measure(frame_rgb)
+
+        # --- confidence weights ---
+        w_gate = 0.0
+        if gate.found:
+            w_gate = float(np.clip(
+                (gate.size_frac - c.hybrid_gate_s_lo)
+                / max(c.hybrid_gate_s_hi - c.hybrid_gate_s_lo, 1e-6), 0.0, 1.0))
+        w_tube = 1.0 if (tube.found and tube.area_frac >= c.hybrid_tube_area_min) else 0.0
+
+        # --- lateral reference (mirror-corrected physical u): GATE -> TUBE -> hold ---
+        gate_u = -gate.u_err if gate.found else 0.0
+        tube_u = -tube.u_tube if tube.found else 0.0
+        u_ref = w_gate * gate_u + (1.0 - w_gate) * w_tube * tube_u
+
+        # --- filtered PD derivative (dirty-derivative) on u_ref and gate v ---
+        first = self._last_t is None
+        dt = 0.0 if first else min(max(now - self._last_t, 1e-3), 0.5)
+        a = 0.0 if first else dt / (c.deriv_tau_s + dt)
+        if first:
+            self._u_filt = u_ref
+            self._v_filt = gate.v_err if gate.found else 0.0
+            du = dv = 0.0
+        else:
+            self._u_filt += a * (u_ref - self._u_filt)
+            du = (u_ref - self._u_filt) / c.deriv_tau_s
+            if gate.found:
+                self._v_filt += a * (gate.v_err - self._v_filt)
+                dv = (gate.v_err - self._v_filt) / c.deriv_tau_s
+            else:
+                dv = 0.0
+        self._last_t = now
+
+        des_roll = float(np.clip(c.k_bank * u_ref + c.kd_u * du,
+                                 -math.radians(c.max_bank_deg), math.radians(c.max_bank_deg)))
+        des_yaw = float(np.clip(c.k_yaw * u_ref, -1.0, 1.0))
+        des_pitch = math.radians(c.cruise_pitch_deg)
+
+        # --- vertical: feedforward glide + gate v-trim (only when a gate is trusted) ---
+        ff_thrust = self.schedule.ff_thrust(active_gate)
+        if gate.found:
+            thrust = ff_thrust - w_gate * (c.k_thrust_v * gate.v_err + c.kd_v * dv)
+        else:
+            thrust = ff_thrust
+        lo_t = max(c.min_thrust, c.hover_cruise - c.thrust_dev_max)
+        hi_t = min(c.max_thrust, c.hover_cruise + c.thrust_dev_max)
+        thrust = float(np.clip(thrust, lo_t, hi_t))
+
+        roll_n, pitch_n, yaw_n = attitude_rates(c, des_roll, des_pitch, des_yaw, gravity, gyro)
+
+        if now - self._last_log_t >= 0.1:
+            self._last_log_t = now
+            logger.info(
+                "[hybrid] g=%s wG=%.2f wT=%.2f u_ref=%+.3f slope=%+.1fdeg | ff_thr=%.3f "
+                "thr=%.3f | gate(sz=%.3f v=%+.3f) tube(u=%+.3f)",
+                active_gate, w_gate, w_tube, u_ref, self.schedule.segment_slope_deg(active_gate),
+                ff_thrust, thrust, gate.size_frac, gate.v_err, tube.u_tube)
+
+        return {"throttle": thrust, "roll": roll_n, "pitch": pitch_n, "yaw": yaw_n,
+                "_debug": {"w_gate": w_gate, "w_tube": w_tube, "u_ref": u_ref,
+                           "ff_thrust": ff_thrust, "gate_found": gate.found,
+                           "gate_size": gate.size_frac, "tube_found": tube.found,
+                           "des_roll": des_roll, "des_yaw": des_yaw}}
