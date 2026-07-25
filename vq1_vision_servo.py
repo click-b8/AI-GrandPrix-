@@ -150,10 +150,12 @@ class ServoConfig:
                                       # descends gently (the whole course drops 26 m and the
                                       # drone starts above gate 1), instead of needing active
                                       # descent at every gate. Still above rest hover ~0.27.
-    k_thrust_v: float = 0.10          # thrust per unit v_err. 0.027 too weak (flight 3 passed
-                                      # below), 0.15 DIVERGED (flight 4), 0.06 saturated the
-                                      # clamp (flight 8 flew over gate 1). 0.10 uses the wider
-                                      # band early instead of ramping into it.
+    k_thrust_v: float = 0.16          # thrust per unit v_err. History: 0.027 too weak (flight
+                                      # 3), 0.15 diverged at the OLD 0.06 clamp (flight 4), 0.10
+                                      # never reached the wider clamp so the GAIN capped descent
+                                      # (flight 9: thrust bottomed 0.185, floor is 0.170). 0.16:
+                                      # v=0.5 -> 0.08 dev, v=0.75 saturates the 0.12 clamp -- the
+                                      # gain can now reach the safety net instead of capping short.
     min_thrust: float = 0.05
     max_thrust: float = 0.60
     # Hard clamp on |thrust - hover_cruise|. The vertical channel must NEVER be
@@ -169,7 +171,7 @@ class ServoConfig:
     # vision frames update slower than the control loop, so a raw frame-to-frame
     # d/dt would be spiky/zero. kd_* ~0.4x the matching P gain.
     kd_u: float = 0.4                 # bank derivative gain (on du/dt), ~0.4 * k_bank
-    kd_v: float = 0.024               # thrust derivative gain (on dv/dt), ~0.4 * k_thrust_v
+    kd_v: float = 0.04                # thrust derivative gain (on dv/dt), scaled with k_thrust_v
     deriv_tau_s: float = 0.15         # derivative low-pass time constant (s)
 
     # ---- attitude stabiliser (inner loop, from IMU) ----
