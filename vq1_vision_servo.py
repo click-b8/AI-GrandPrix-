@@ -72,14 +72,15 @@ MAX_BODY_RATE = 12.0
 # refining a point -- or adding a 5th -- is a ONE-LINE data change here; the
 # control logic never changes.
 #
-# *** PLACEHOLDER VALUES *** -- replace with the descent-rate probe results:
-#   run_vq1.py --hover-probe 0.29 / 0.26 / 0.23 / 0.20  and read each DONE line's
-#   SINK RATE. Nominal guess below assumes ~0.03 thrust per 1 m/s of sink.
+# MEASURED on v3385 (2026-07-25, --hover-probe SINK RATE). Roughly linear, ~ -0.18
+# m/s sink per +0.01 thrust. Note 0.29 already sinks +0.72 -- our "hover" is a
+# gentle glide, which suits a descending course. To refine: re-measure and edit a
+# row, or add a point (keep it monotone: lower thrust -> more sink).
 THRUST_SINK_MAP = [
-    (0.29, 0.0),   # ~hover (measured hover ~0.27-0.29)  <- replace
-    (0.26, 1.0),   # PLACEHOLDER                          <- replace
-    (0.23, 2.0),   # PLACEHOLDER                          <- replace
-    (0.20, 3.0),   # PLACEHOLDER                          <- replace
+    (0.29, 0.72),
+    (0.26, 1.13),
+    (0.23, 1.79),
+    (0.20, 2.30),
 ]
 
 
@@ -243,6 +244,9 @@ class ServoConfig:
     hybrid_gate_s_lo: float = 0.05    # gate size where gate-authority (w_gate) starts ramping
     hybrid_gate_s_hi: float = 0.15    # gate size for FULL gate authority (precise pass)
     hybrid_tube_area_min: float = 0.01  # tube masked-area frac to count as "visible"
+    hybrid_v_trim_band: float = 0.03  # vision v-error may only move thrust +/- this much
+                                      # around the feedforward glide. FEEDFORWARD carries the
+                                      # descent (slope is shallow); vision trims residual only.
 
     # bookkeeping (not a knob)
     name: str = "vq1-vision-servo-v0"
@@ -849,12 +853,16 @@ class HybridController:
         des_yaw = float(np.clip(c.k_yaw * u_ref, -1.0, 1.0))
         des_pitch = math.radians(c.cruise_pitch_deg)
 
-        # --- vertical: feedforward glide + gate v-trim (only when a gate is trusted) ---
+        # --- vertical: FEEDFORWARD glide dominates; vision v-error trims within a
+        #     small band (+/- hybrid_v_trim_band) around the feedforward thrust. ---
         ff_thrust = self.schedule.ff_thrust(active_gate)
         if gate.found:
-            thrust = ff_thrust - w_gate * (c.k_thrust_v * gate.v_err + c.kd_v * dv)
+            v_trim = w_gate * (c.k_thrust_v * gate.v_err + c.kd_v * dv)
+            v_trim = float(np.clip(v_trim, -c.hybrid_v_trim_band, c.hybrid_v_trim_band))
         else:
-            thrust = ff_thrust
+            v_trim = 0.0
+        thrust = ff_thrust - v_trim
+        # Hard safety net still applies (never collapse the flight).
         lo_t = max(c.min_thrust, c.hover_cruise - c.thrust_dev_max)
         hi_t = min(c.max_thrust, c.hover_cruise + c.thrust_dev_max)
         thrust = float(np.clip(thrust, lo_t, hi_t))

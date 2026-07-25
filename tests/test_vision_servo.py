@@ -409,12 +409,15 @@ def make_tube_frame(gate_cx=None, gate_sz=0.16, tube=True, w=640, h=360):
 
 
 def test_thrust_for_sink_interp_and_clamp():
-    # exact points, a midpoint, and clamping outside the range
-    assert abs(thrust_for_sink(0.0) - 0.29) < 1e-9
-    assert abs(thrust_for_sink(2.0) - 0.23) < 1e-9
-    assert 0.23 < thrust_for_sink(1.5) < 0.26        # interpolated
-    assert thrust_for_sink(99) == THRUST_SINK_MAP[-1][0]   # clamp to max sink -> min thrust
-    assert thrust_for_sink(-5) == THRUST_SINK_MAP[0][0]    # climb clamps to hover thrust
+    # robust to the actual map values: exact at points, monotone, clamped, interp.
+    pts = sorted(THRUST_SINK_MAP, key=lambda p: p[1])   # ascending sink
+    for thrust, sink in pts:
+        assert abs(thrust_for_sink(sink) - thrust) < 1e-9         # exact at map points
+    assert thrust_for_sink(pts[0][1]) > thrust_for_sink(pts[-1][1])  # more sink -> less thrust
+    assert thrust_for_sink(pts[-1][1] + 10) == pts[-1][0]        # max sink -> min thrust (clamp)
+    assert thrust_for_sink(pts[0][1] - 10) == pts[0][0]          # below range -> max thrust (clamp)
+    mid = (pts[0][1] + pts[1][1]) / 2
+    assert pts[1][0] < thrust_for_sink(mid) < pts[0][0]          # interpolated between neighbours
 
 
 def test_course_schedule_staircase():
@@ -460,6 +463,17 @@ def test_hybrid_ff_thrust_matches_segment():
     lvl = h.command(make_tube_frame(gate_cx=None), telem(), active_gate=0)["throttle"]
     stp = HybridController().command(make_tube_frame(gate_cx=None), telem(), active_gate=2)["throttle"]
     assert stp < lvl                                  # steep segment descends harder
+
+
+def test_hybrid_v_trim_bounded_to_band():
+    # FEEDFORWARD dominates: with a big gate driven to the frame bottom (large
+    # v_err), the vision v-trim must stay within +/- hybrid_v_trim_band of ff.
+    cfg = ServoConfig()
+    frame = np.full((360, 640, 3), 20, dtype=np.uint8)
+    frame[300:356, 292:348] = RED_GATE                 # big gate at the bottom (v_err large)
+    o = HybridController().command(frame, telem(), active_gate=1)
+    assert o["_debug"]["gate_size"] >= cfg.hybrid_gate_s_lo
+    assert abs(o["throttle"] - o["_debug"]["ff_thrust"]) <= cfg.hybrid_v_trim_band + 1e-6
 
 
 def test_hybrid_command_contract():
