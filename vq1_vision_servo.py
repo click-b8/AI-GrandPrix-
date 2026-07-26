@@ -99,6 +99,30 @@ def thrust_for_sink(sink_rate: float) -> float:
 SPAWN_PITCH_DEG = -17.8
 CRUISE_PITCH_TOL_DEG = 5.0
 
+# LATERAL SIGN CONVENTION (was mislabeled "mirror" -- flights 6-7). CORRECTED:
+# the DGX confirmed the FPV camera is NOT mirrored (a gate at image x=393 matches
+# the +2.21 deg right-of-nose bearing; image-right = world-right). So u_err>0 IS a
+# physically-right gate. The sign is instead the DCL sim's LATERAL FRAME: a
+# positive commanded roll banks/translates the drone to its LEFT (the sim's body-y
+# is left-positive). The forward/x axis is standard -- which is exactly why PITCH
+# works with no sign and only the lateral (roll+yaw) channel needs one.
+#
+#   Sign trace, right gate (u_err > 0):
+#     want physical RIGHT translation (to centre the gate)
+#     -> in this sim a right translation is a NEGATIVE roll setpoint (body-y left+)
+#     -> des_roll = k_bank * (LATERAL_SIGN * u_err),  LATERAL_SIGN = -1
+#     -> attitude loop drives measured roll (atan2(gy,gz)) to des_roll; gy and the
+#        roll gyro are self-consistent, so the loop converges
+#     -> adapter wire_body_rate applies PLANT_RATE_CALIB (K_roll=-2.55: wire<->gyro
+#        sign+scale -- a SEPARATE, correctly-placed correction, present on all axes)
+#
+# It is NOT a mirror, and it cannot move earlier: the inner loop's gravity-y and
+# roll-gyro already agree, so flipping the roll ESTIMATE alone would invert the
+# feedback and DIVERGE the loop. The minimal, correct home for the sim's
+# left-handed lateral convention is here, at the vision->roll/yaw setpoint, where
+# our right-positive vision meets the sim's left-positive roll.
+LATERAL_SIGN = -1.0
+
 
 # ===========================================================================
 # ============================  CALIBRATE ME  ===============================
@@ -711,16 +735,14 @@ class VisionServoController:
         else:
             self._size_locked = False
 
-        # LATERAL SIGN FIX (flights 6-7, root cause). The actuator is verified K=+1
-        # and the vertical channel is correct, yet BOTH bank and yaw were inverted
-        # -- the two lateral channels share exactly one input, u_err. Horizontal-
-        # only inversion == a horizontally-MIRRORED FPV image (a flip inverts
-        # left-right but not up-down, matching the data). The detector reports
-        # IMAGE coords; convert to a PHYSICAL control error here so guidance uses
-        # POSITIVE gains. u_ctrl>0 => gate physically RIGHT => bank/yaw RIGHT.
-        # Continuity/gating deliberately stay in IMAGE coords (det.u_err) -- they
-        # compare blob positions frame-to-frame, correct regardless of the mirror.
-        u_ctrl = -det.u_err
+        # LATERAL frame sign (see LATERAL_SIGN at module top -- the DGX confirmed the
+        # camera is NOT mirrored; this is the sim's left-positive roll convention,
+        # which is why pitch works and only the lateral channel needs a sign).
+        # u_ctrl is the roll/yaw SETPOINT error in the sim's frame: right gate
+        # (det.u_err>0) -> u_ctrl<0 -> negative roll setpoint -> right translation.
+        # Continuity/gating stay in IMAGE coords (det.u_err) -- they compare blob
+        # positions frame-to-frame and are correct regardless of the sign.
+        u_ctrl = LATERAL_SIGN * det.u_err
 
         if accepted:
             # Filtered PD derivative on control-u, v (dirty-derivative: low-pass
@@ -742,7 +764,7 @@ class VisionServoController:
             self._last_size = det.size_frac
 
             # BANK translates: P on control-u + D on d(control-u)/dt. Positive gains
-            # (the mirror is already handled in u_ctrl).
+            # (the sim's lateral sign is already in u_ctrl via LATERAL_SIGN).
             des_roll = float(np.clip(c.k_bank * u_ctrl + c.kd_u * du_dt,
                                      -math.radians(c.max_bank_deg),
                                      math.radians(c.max_bank_deg)))
@@ -760,8 +782,8 @@ class VisionServoController:
                 thrust = c.hover_cruise * c.lost_thrust_scale
             elif dt_lost <= c.search_timeout_s:      # gentle yaw toward last-seen side
                 des_roll, des_pitch = 0.0, cruise_pitch
-                # yaw toward where the gate PHYSICALLY was (last image-u is mirrored)
-                des_yaw = math.copysign(c.search_yaw, (-self._last_u_err) or 1.0)
+                # yaw toward where the gate physically was (LATERAL_SIGN on last image-u)
+                des_yaw = math.copysign(c.search_yaw, (LATERAL_SIGN * self._last_u_err) or 1.0)
                 thrust = c.hover_cruise * c.lost_thrust_scale
             else:                                    # give up: level + hold hover
                 des_roll, des_pitch, des_yaw = 0.0, 0.0, 0.0
@@ -861,10 +883,10 @@ class HybridController:
       TUBE  -- visible, continuous lane                         -> lateral u trim
       FEEDFORWARD -- known-path glide (thrust) + heading hold   -> backbone
 
-        u_ref  = w_gate*gate_u + (1-w_gate)*w_tube*tube_u        (mirror-corrected)
+        u_ref  = w_gate*gate_u + (1-w_gate)*w_tube*tube_u    (LATERAL_SIGN, not mirror)
         thrust = CourseSchedule.ff_thrust(active_gate) - w_gate*(k_thrust_v*gate_v + kd_v*dv)
 
-    Gate detection, the mirror fix, the attitude inner loop, the thrust clamp, and
+    Gate detection, the lateral-sign convention, the attitude inner loop, the clamp, and
     the filtered PD derivative are reused from the vision servo. Same command
     contract: command(frame, telemetry, active_gate) -> {throttle,roll,pitch,yaw}.
     """
@@ -943,9 +965,10 @@ class HybridController:
                 / max(c.hybrid_gate_s_hi - c.hybrid_gate_s_lo, 1e-6), 0.0, 1.0))
         w_tube = 1.0 if (tube.found and tube.area_frac >= c.hybrid_tube_area_min) else 0.0
 
-        # --- lateral reference (mirror-corrected physical u): GATE -> TUBE -> hold ---
-        gate_u = -gate.u_err if gate.found else 0.0
-        tube_u = -tube.u_tube if tube.found else 0.0
+        # --- lateral reference (sim-frame roll setpoint; LATERAL_SIGN, NOT a mirror
+        #     -- see module top): GATE -> TUBE -> hold ---
+        gate_u = LATERAL_SIGN * gate.u_err if gate.found else 0.0
+        tube_u = LATERAL_SIGN * tube.u_tube if tube.found else 0.0
         u_ref = w_gate * gate_u + (1.0 - w_gate) * w_tube * tube_u
 
         # --- filtered PD derivative (dirty-derivative) on u_ref and gate v ---

@@ -187,20 +187,21 @@ def test_gravity_rolled_right_positive():
 # guidance signs (outer loop)
 # --------------------------------------------------------------------------
 def test_lateral_convention_locked():
-    # LOCK the lateral sign convention -- this class of bug cost five flights.
-    # The DCL FPV is horizontally MIRRORED, so the physical control error
-    # u_ctrl = -image_u. A gate PHYSICALLY to the RIGHT (u_ctrl>0) MUST command
-    # bank AND yaw to the RIGHT (positive), moving the drone toward it.
-    # An image-LEFT blob is physically RIGHT:
-    right = VisionServoController().command(make_frame(0.20, 0.5), telem(), active_gate=0)
-    assert right["_debug"]["u_ctrl"] > 0
-    assert right["_debug"]["des_roll"] > 0.0    # bank right
-    assert right["yaw"] > 0.0                    # yaw right
-    # An image-RIGHT blob is physically LEFT -> command LEFT:
-    left = VisionServoController().command(make_frame(0.80, 0.5), telem(), active_gate=0)
-    assert left["_debug"]["u_ctrl"] < 0
-    assert left["_debug"]["des_roll"] < 0.0
-    assert left["yaw"] < 0.0
+    # LOCK the lateral sign (cost five flights). Camera is NOT mirrored (DGX-
+    # confirmed), so image-u == physical-u. The sign is the sim's LEFT-positive
+    # roll: des_roll>0 translates LEFT. So a gate physically LEFT (u_err<0) needs
+    # des_roll>0 (left); physically RIGHT (u_err>0) needs des_roll<0 (right).
+    # u_ctrl = LATERAL_SIGN * u_err.
+    # image-LEFT gate (u_err<0) -> u_ctrl>0 -> des_roll>0 (left translation, toward it):
+    left_gate = VisionServoController().command(make_frame(0.20, 0.5), telem(), active_gate=0)
+    assert left_gate["_debug"]["u_ctrl"] > 0
+    assert left_gate["_debug"]["des_roll"] > 0.0
+    assert left_gate["yaw"] > 0.0
+    # image-RIGHT gate (u_err>0) -> u_ctrl<0 -> des_roll<0 (right translation):
+    right_gate = VisionServoController().command(make_frame(0.80, 0.5), telem(), active_gate=0)
+    assert right_gate["_debug"]["u_ctrl"] < 0
+    assert right_gate["_debug"]["des_roll"] < 0.0
+    assert right_gate["yaw"] < 0.0
 
 
 def test_gate_low_reduces_thrust():
@@ -249,7 +250,8 @@ def test_yaw_rate_damped_by_gyro():
 # --------------------------------------------------------------------------
 def test_lost_gate_coasts_then_searches():
     ctl = VisionServoController()
-    # Gate seen at IMAGE-right (make_frame 0.80) -> physically LEFT (mirror). Lose it.
+    # Gate seen at IMAGE-right (make_frame 0.80) = physically right; sim's left-
+    # positive roll means the search yaws toward it via LATERAL_SIGN. Lose it.
     ctl.command(make_frame(0.80, 0.5), telem(), active_gate=0, now=100.0)
     dark = np.full((360, 640, 3), 25, dtype=np.uint8)
     coast = ctl.command(dark, telem(), active_gate=0, now=100.2)   # within reacquire
@@ -439,11 +441,12 @@ def test_course_schedule_ff_thrust_descends_on_steep():
 
 def test_hybrid_gate_dominates_when_big():
     h = HybridController()
-    # big gate image-right (physically LEFT via mirror) + tube -> gate wins, bank left
+    # big gate physically RIGHT (image x=0.75) + tube -> gate wins; right gate needs
+    # des_roll<0 (sim left-positive roll -> negative = right translation)
     o = h.command(make_tube_frame(gate_cx=0.75, gate_sz=0.18), telem(), active_gate=2)
     assert o["_debug"]["w_gate"] > 0.9
-    assert o["_debug"]["u_ref"] < 0                  # gate (mirror-corrected) dominates
-    assert o["_debug"]["des_roll"] < 0               # bank left toward physical gate
+    assert o["_debug"]["u_ref"] < 0                  # LATERAL_SIGN * (u_err>0) -> <0
+    assert o["_debug"]["des_roll"] < 0               # negative roll = right translation
 
 
 def test_hybrid_tube_when_no_gate():
@@ -485,9 +488,9 @@ def test_hybrid_command_contract():
         assert -1.0 <= o[k] <= 1.0
 
 
-def test_hybrid_inherits_mirror_fix():
-    # CONFIRM (don't assume): the hybrid applies the mirror (u_ctrl = -u_err).
-    # gate IMAGE-right (physically LEFT) -> u_ref<0 -> bank left.
+def test_hybrid_inherits_lateral_sign():
+    # CONFIRM (don't assume): the hybrid applies LATERAL_SIGN (u_ref = LATERAL_SIGN*u).
+    # gate physically RIGHT (image x=0.78) -> u_ref<0 -> des_roll<0 (right translation).
     o = HybridController().command(make_tube_frame(gate_cx=0.78, gate_sz=0.18),
                                    telem(), active_gate=2)
     assert o["_debug"]["u_ref"] < 0
