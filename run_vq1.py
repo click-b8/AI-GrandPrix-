@@ -167,8 +167,10 @@ class _MAVLinkReceiver:
     udpin: connection established at startup.
     """
 
-    def __init__(self, sim_conn):
+    def __init__(self, sim_conn, persistent_rearm=False):
         self._conn = sim_conn
+        self._persistent_rearm = persistent_rearm   # test mode: disarm+re-arm in-process
+        self._race_count = 0                          # races flown this connection
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._last_race_log = 0.0
@@ -183,6 +185,21 @@ class _MAVLinkReceiver:
         self._dt_last_warn = 0                        # fallback count at last warning
         self._dup_dropped = 0                        # duplicate-time_usec samples dropped
         self._dup_last_log = 0                        # dup count at last log
+
+    def _rearm(self):
+        """Disarm then re-arm on the SAME connection (persistent-rearm test). Does
+        the sim reset the drone + present a fresh countdown for a re-armed persistent
+        client? If yes -> the grinder is one process, no reconnect."""
+        try:
+            for param1 in (0, 1):   # 0 = disarm, then 1 = arm
+                self._conn.mav.command_long_send(
+                    self._conn.target_system, self._conn.target_component,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0, param1, 0, 0, 0, 0, 0, 0)
+                time.sleep(0.15)
+            logger.info("[Race] disarm+arm sent (persistent re-arm), staying connected.")
+        except Exception as exc:
+            logger.warning("[Race] re-arm send failed: %s", exc)
 
     def _imu_dt(self, time_usec):
         """dt from HIGHRES_IMU.time_usec deltas (sim time), NOT wall-clock arrival.
@@ -352,6 +369,25 @@ class _MAVLinkReceiver:
                         delta = race_start_ms - sim_boot_ms
                         is_stale = race_start_ms >= 0 and delta < STALE_DELTA_MS
 
+                        # PERSISTENT RE-ARM (test mode): once a race is LIVE, a fresh
+                        # future countdown (new race_start, delta>0) or a finish means
+                        # THIS race ended. Disarm + re-arm and reset the arming state so
+                        # the SAME connection catches the next GO -- no reconnect.
+                        if (self._persistent_rearm and _race_started and not is_stale
+                                and ((race_start_ms >= 0 and delta > 0
+                                      and race_start_ms != _armed_race_start_ms)
+                                     or race_finish_ns > 0)):
+                            logger.info(
+                                "[Race] race %d ENDED (finish_ns=%d, new race_start=%d "
+                                "delta=%d) -- re-arming, watching for GO #%d on the same "
+                                "connection.", self._race_count + 1, race_finish_ns,
+                                race_start_ms, delta, self._race_count + 2)
+                            self._rearm()
+                            _race_started = False
+                            _countdown_armed = False
+                            _armed_race_start_ms = -1
+                            self._race_count += 1
+
                         if not is_stale:
                             if (not _countdown_armed) and race_start_ms >= 0 and delta > 0:
                                 _countdown_armed = True
@@ -381,7 +417,9 @@ class _MAVLinkReceiver:
                                     sim_boot_ms - _armed_race_start_ms,
                                 )
                         now = time.time()
-                        if now - self._last_race_log >= 1.0:
+                        # Persistent-rearm test logs EVERY status line (see the full
+                        # cadence around a re-arm); normal mode throttles to ~1 Hz.
+                        if self._persistent_rearm or now - self._last_race_log >= 1.0:
                             self._last_race_log = now
                             # delta > 0 = countdown running (GO is in the future);
                             # delta <= 0 = race live. Watch delta cross 0 at "Go!".
@@ -433,6 +471,7 @@ async def run(
     device: str = None,
     hover_probe: float = None,
     controller: str = "model",
+    persistent_rearm: bool = False,
 ):
     global _vision_receiver, _mavlink_rx, _timesync, _trajectory_logger
 
@@ -501,7 +540,7 @@ async def run(
         _armed_race_start_ms = -1
 
         # Start MAVLink receive loop to keep _latest_telemetry current.
-        _mavlink_rx = _MAVLinkReceiver(sim_conn)
+        _mavlink_rx = _MAVLinkReceiver(sim_conn, persistent_rearm=persistent_rearm)
         _mavlink_rx.start()
 
     # Hardcoded vision-servo command source (no RL). It owns its own inputs:
@@ -633,6 +672,11 @@ if __name__ == "__main__":
                         choices=["attitude", "rates", "actuator"],
                         help="attitude/rates: SET_ATTITUDE_TARGET type_mask=128 (CTBR); "
                              "actuator: SET_ACTUATOR_CONTROL_TARGET group 0 at --hz")
+    parser.add_argument("--persistent-rearm", action="store_true",
+                        help="TEST MODE: after a race ends, disarm+re-arm on the SAME "
+                             "connection and watch for the next countdown (no reconnect). "
+                             "Logs every [Race Status] line. Confirms whether the sim gives "
+                             "a re-armed persistent client a 2nd GO -> one-process grinder.")
     parser.add_argument("--controller", default="model",
                         choices=["model", "vision-servo", "hybrid"],
                         help="model: distilled RL policy. vision-servo: HARDCODED "
@@ -700,4 +744,4 @@ if __name__ == "__main__":
 
     asyncio.run(run(args.host, args.port, args.hz, args.vision_port,
                     args.log_trajectory, args.control_mode, args.device,
-                    args.hover_probe, args.controller))
+                    args.hover_probe, args.controller, args.persistent_rearm))
