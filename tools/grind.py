@@ -48,6 +48,7 @@ ROOT = os.path.dirname(HERE)
 RUN_VQ1 = os.environ.get("GRIND_RUN_VQ1", os.path.join(ROOT, "run_vq1.py"))
 
 sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)   # for the sibling ui_reset module (--ui-reset)
 # Reuse attempt_runner's tested process/log helpers (kill-tree, fsync'd append).
 from attempt_runner import _kill_tree, _reader_thread, _count_existing, _write_record, _utcnow  # noqa: E402
 
@@ -207,7 +208,26 @@ def main():
     p.add_argument("--device", default=None, choices=[None, "cuda", "mps", "cpu"])
     p.add_argument("--logdir", default=os.path.join(ROOT, "grind_logs"),
                    help="per-attempt full flight logs are written here")
+    p.add_argument("--ui-reset", action="store_true",
+                   help="between attempts, replay the sim's race re-arm UI sequence "
+                        "(Escape -> Back to Main Menu -> R1 tab) via tools/ui_reset.py. "
+                        "Run 'python tools/ui_reset.py --calibrate' once first.")
+    p.add_argument("--ui-config", default=os.path.join(ROOT, "ui_reset.json"),
+                   help="UI-reset coords/sequence config (from --calibrate)")
     args = p.parse_args()
+
+    _ui_reset = None
+    if args.ui_reset:
+        # Validate (don't execute) at startup: pyautogui present + config calibrated.
+        from ui_reset import load_config, run_sequence, _pyautogui  # noqa: E402
+        _pyautogui()   # fail fast if pyautogui is missing
+        _cfg = load_config(args.ui_config)
+        if any(s["action"] == "click" and s.get("x", 0) == 0 and s.get("y", 0) == 0
+               for s in _cfg["steps"]):
+            sys.exit("[grind] --ui-reset: config is uncalibrated (0,0 coords). Run first:\n"
+                     "  python tools/ui_reset.py --calibrate")
+        _ui_reset = (_cfg, run_sequence)
+        print("[grind] --ui-reset ON: replaying the race re-arm UI between attempts.")
 
     def _sigint(_s, _f):
         global _stop
@@ -230,7 +250,17 @@ def main():
         completions += (rec["outcome"] == "COMPLETED")
         print(f"[grind] #{aid}: {rec['outcome']} (gate {rec['gates_passed']}/{NUM_GATES}, "
               f"{rec['duration_s']}s) -- {rec['note']}")
-        if not _stop:
+        if not _stop and n < args.max_attempts:
+            # run_vq1 is already gracefully stopped (disarmed + disconnected). Now
+            # replay the UI to re-arm the next race, THEN settle, THEN relaunch --
+            # so the next run_vq1 connects into a freshly-armed countdown (which is
+            # the deterministic timing the reconnect-only approach lacked).
+            if _ui_reset is not None:
+                cfg, run_sequence = _ui_reset
+                try:
+                    run_sequence(cfg, countdown=1.0, verbose=True)
+                except Exception as exc:
+                    print(f"[grind] UI-reset failed: {exc} (continuing; attempt may ERROR)")
             time.sleep(args.settle)
 
     print(f"[grind] done: {n} attempts this session, {completions} completions. "

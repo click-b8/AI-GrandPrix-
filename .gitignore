@@ -40,3 +40,7 @@ trajectory_plot.html
 
 # Personal Claude Code settings
 .claude/settings.local.json
+
+# grinder machine-specific / runtime artifacts
+ui_reset.json
+grind_logs/
