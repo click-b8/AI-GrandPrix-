@@ -462,7 +462,12 @@ class DroneRaceEnv(gym.Env):
         if self._vision_mode or self._fpv_view:
             self._fpv_cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, "fpv")
             self._gimbal_cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, "gimbal")
-            # Reset renderer when model changes (domain randomization rebuilds model)
+            # Reset renderer when model changes (domain randomization rebuilds model).
+            # Must close() first: mujoco.Renderer owns a live EGL context + GPU-side
+            # graphics objects under MUJOCO_GL=egl, which are not freed by just
+            # dropping the reference (2026-07-26 surface_seed1 GPU-driver-hang incident).
+            if self._renderer is not None:
+                self._renderer.close()
             self._renderer = None
 
     def reset(self, seed=None, options=None):

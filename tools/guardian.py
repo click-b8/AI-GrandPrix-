@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 
 EP_LEN_RE = re.compile(r"ep_len_mean\s*\|\s*([\d.]+)")
 GATES_RE = re.compile(r"gates_passed\s*mean=([\d.]+)")
+TIMESTEPS_RE = re.compile(r"total_timesteps\s*\|\s*([\d,]+)")
 
 
 def log(path, msg):
@@ -62,11 +63,14 @@ def tail_metrics(train_log_path, n_bytes=16384):
         return None, None
     ep_len = None
     gates = None
+    timesteps = None
     for m in EP_LEN_RE.finditer(tail):
         ep_len = m.group(1)
     for m in GATES_RE.finditer(tail):
         gates = m.group(1)
-    return ep_len, gates
+    for m in TIMESTEPS_RE.finditer(tail):
+        timesteps = m.group(1)
+    return ep_len, gates, timesteps
 
 
 def main():
@@ -85,6 +89,12 @@ def main():
                          "rather than looping against a full disk")
     p.add_argument("--restart-backoff", type=float, default=10.0,
                     help="seconds to wait before relaunching after a crash")
+    p.add_argument("--stall-timeout", type=float, default=1800.0,
+                    help="if total_timesteps in train.log hasn't advanced for this many "
+                         "seconds while the child is still alive (proc.poll() == None), "
+                         "treat it as hung -- e.g. a wedged GPU driver, see the 2026-07-26 "
+                         "surface_seed1 incident where the child sat alive-but-frozen for "
+                         "7+ hours -- and kill it so the outer loop relaunches")
     p.add_argument("train_args", nargs=argparse.REMAINDER,
                     help="everything after -- is passed to the training script verbatim")
     args = p.parse_args()
@@ -125,6 +135,8 @@ def main():
             proc = subprocess.Popen(cmd, stdout=tlog, stderr=subprocess.STDOUT)
 
             last_check = 0.0
+            last_progress_val = None
+            last_progress_time = time.time()
             while True:
                 ret = proc.poll()
                 if ret is not None:
@@ -133,10 +145,26 @@ def main():
                 if now - last_check >= args.check_interval:
                     last_check = now
                     free_gb = disk_free_gb(args.save_dir)
-                    ep_len, gates = tail_metrics(train_log)
+                    ep_len, gates, timesteps = tail_metrics(train_log)
                     log(guardian_log,
                         f"health: ep_len_mean={ep_len or 'n/a'} "
-                        f"gates_passed={gates or 'n/a'} free_disk_gb={free_gb:.2f}")
+                        f"gates_passed={gates or 'n/a'} free_disk_gb={free_gb:.2f} "
+                        f"total_timesteps={timesteps or 'n/a'}")
+                    if timesteps is not None and timesteps != last_progress_val:
+                        last_progress_val = timesteps
+                        last_progress_time = now
+                    elif now - last_progress_time > args.stall_timeout:
+                        log(guardian_log,
+                            f"CRITICAL: total_timesteps stuck at "
+                            f"{last_progress_val or 'n/a'} for over "
+                            f"{args.stall_timeout:.0f}s while child is still alive -- "
+                            f"treating as hung (e.g. wedged GPU driver) and killing it")
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=30)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        break
                     if free_gb < args.min_free_gb:
                         log(guardian_log, f"CRITICAL: {free_gb:.2f} GB free -- "
                                            f"terminating child before it corrupts a checkpoint")
