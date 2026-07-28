@@ -170,17 +170,32 @@ class ServoConfig:
     # nearest-gate selection: target the LARGEST connected blob, not the centroid
     # of all red pixels (which blends near+far gates and aims between them).
     use_largest_blob: bool = True
-    dilate_gaps: bool = True            # 1-px dilation bridges hollow-square JPEG breaks
+    dilate_gaps: bool = True            # dilation bridges hollow-square JPEG breaks
+    gate_dilate_px: int = 1             # dilation RADIUS. 1 bridges a 2-px break. MEASURED
+                                        # (vision_frame.png 7/27 19:16): the bright cyan tube
+                                        # glow crossing gate 1's lower half opens a 6-px gap,
+                                        # splitting the gate into two blobs (483 px @ cy=167
+                                        # + 203 px @ cy=193) and biasing v_err to -0.071 when
+                                        # the merged truth is -0.029 (2.4x). Radius 3 closes
+                                        # it (686 px @ cy=174.7) and still leaves gate 2
+                                        # (cy=219) a separate blob. Default stays 1 so the
+                                        # legacy servo/hybrid paths are bit-identical.
     largest_blob_tol: float = 0.70      # blobs within this frac of max area are tie-broken
     max_mask_frac_reject: float = 0.20  # if the mask covers >20% it isn't gates -> reject
 
-    # ---- guidance tube (cyan) -- MEASUREMENT ONLY, no guidance wiring yet ----
-    # Measured on vision_frame.png: tube hue ~198 (176-239), sat med 0.72, val
-    # med 0.52, ~5% of frame, continuous down the course centreline.
+    # ---- guidance tube (cyan) -- WIRED into HybridController lateral (u_lower
+    #      centring + k_tube_lead*curvature lead); measurement-only in VisionServo. --
+    # Re-measured on vision_frame.png (real FPV): tube hue 193-206 (med 199), sat
+    # med 0.65 (5th pct 0.41), val med 0.41 (5th pct 0.31). The OLD val_min=0.40
+    # sat right on the val median, so half the tube was within 0.01 of the cutoff
+    # -> any dimmer frame (far tube, nose-down attitude, dark course section)
+    # collapsed the mask: that was the live 0.001-0.059 area flicker / found=0.
+    # val_min=0.28 sits below the 5th pctile, so the mask survives dimming (verified:
+    # found=True, area>=0.04 down to 60% brightness vs old band's 0.005/found=False).
     tube_hue_lo: float = 180.0
     tube_hue_hi: float = 215.0
     tube_sat_min: float = 0.30
-    tube_val_min: float = 0.40
+    tube_val_min: float = 0.28
     tube_lower_band: tuple = (0.60, 0.85)  # frac of H: nearest/widest -> most stable u
     tube_upper_band: tuple = (0.35, 0.55)  # frac of H: curvature reference (bend ahead)
     tube_min_band_frac: float = 0.004      # min masked frac of a band to trust its centre
@@ -268,6 +283,11 @@ class ServoConfig:
     hybrid_gate_s_lo: float = 0.05    # gate size where gate-authority (w_gate) starts ramping
     hybrid_gate_s_hi: float = 0.15    # gate size for FULL gate authority (precise pass)
     hybrid_tube_area_min: float = 0.01  # tube masked-area frac to count as "visible"
+    k_tube_lead: float = 0.5          # anticipatory lateral FF: weight on tube CURVATURE
+                                      # (u_upper-u_lower, where the line LEADS) added to the
+                                      # near-band centring. u_lower keeps you ON the line;
+                                      # curvature steers toward where it GOES (e.g. gate 1 at
+                                      # +2.21deg). Conservative start -- tune live.
     hybrid_v_trim_band: float = 0.03  # vision v-error may only move thrust +/- this much
                                       # around the feedforward glide. FEEDFORWARD carries the
                                       # descent (slope is shallow); vision trims residual only.
@@ -276,6 +296,22 @@ class ServoConfig:
                                       # a missed gate can't stall the controller forever.
                                       # active_gate (ground truth) still LEADS; this only
                                       # covers a stall, never an early drift-driven advance.
+
+    # ---- open-loop flier (OpenLoopFlier: the anti-flip controller) ----
+    # Every reactive flight died to a vertical/attitude RUNAWAY; the fixed-thrust
+    # 0.40 hover probe flew straightest and never flipped. So: thrust is OPEN-LOOP
+    # (sink schedule, NO vertical PID), attitude is a GENTLE hard-clamped hold (not
+    # the stiff kp_att=3.0 winder), and tube-curvature steering is the ONLY closed
+    # loop. A flip is structurally impossible: no positive-feedback source + a hard
+    # small rate clamp = nothing can wind up.
+    ol_thrust_lo: float = 0.18        # open-loop thrust hard floor (never collapse)
+    ol_thrust_hi: float = 0.34        # open-loop thrust hard ceiling (never rocket up)
+    ol_kp_att: float = 1.0            # GENTLE attitude-hold P (vs stiff kp_att=3.0)
+    ol_kd_att: float = 0.05           # rate damping on the hold
+    ol_max_rate_rad_s: float = 0.6    # HARD clamp on every commanded body rate -> no wind-up
+    ol_max_bank_deg: float = 25.0     # lateral setpoint clamp (tighter than max_bank_deg)
+    ol_fence_deg: float = 28.0        # attitude FENCE: past this tilt, stop steering + recover
+    ol_gate_trim: float = 0.30        # max fraction gate-centring may pull lateral when gate is big
 
     # bookkeeping (not a knob)
     name: str = "vq1-vision-servo-v0"
@@ -319,15 +355,19 @@ def rgb_to_hsv_arrays(frame_rgb: np.ndarray):
     return h, s, v
 
 
-def _dilate1(mask):
-    """1-px 8-connected binary dilation, pure numpy. Bridges the small breaks a
-    hollow-square gate frame gets from JPEG/anti-aliasing so it labels as ONE
-    blob rather than four disconnected sides."""
-    d = mask.copy()
-    d[:-1, :] |= mask[1:, :]; d[1:, :] |= mask[:-1, :]
-    d[:, :-1] |= mask[:, 1:]; d[:, 1:] |= mask[:, :-1]
-    d[:-1, :-1] |= mask[1:, 1:]; d[:-1, 1:] |= mask[1:, :-1]
-    d[1:, :-1] |= mask[:-1, 1:]; d[1:, 1:] |= mask[:-1, :-1]
+def _dilate1(mask, radius=1):
+    """8-connected binary dilation by `radius` px, pure numpy. Bridges the small
+    breaks a hollow-square gate frame gets from JPEG/anti-aliasing so it labels as
+    ONE blob rather than four disconnected sides. A radius-r pass closes a gap of
+    up to 2r px; see ServoConfig.gate_dilate_px for why gate 1 needs r=3."""
+    d = mask
+    for _ in range(max(1, int(radius))):
+        s = d
+        d = s.copy()
+        d[:-1, :] |= s[1:, :]; d[1:, :] |= s[:-1, :]
+        d[:, :-1] |= s[:, 1:]; d[:, 1:] |= s[:, :-1]
+        d[:-1, :-1] |= s[1:, 1:]; d[:-1, 1:] |= s[1:, :-1]
+        d[1:, :-1] |= s[:-1, 1:]; d[1:, 1:] |= s[:-1, :-1]
     return d
 
 
@@ -398,7 +438,7 @@ class GateDetector:
         centroid (nearest in perspective). Returns (cx, cy, area_px) or None."""
         c = self.cfg
         H, W = mask.shape
-        work = _dilate1(mask) if c.dilate_gaps else mask
+        work = _dilate1(mask, c.gate_dilate_px) if c.dilate_gaps else mask
         stats = []
         for comp in _connected_components(work):
             pts = [(y, x) for (y, x) in comp if mask[y, x]]  # count ORIGINAL px only
@@ -482,11 +522,11 @@ class TubeMeasurement:
 
 
 class TubeDetector:
-    """MEASUREMENT-ONLY detector for the cyan guidance tube down the course centre.
+    """Detector for the cyan guidance tube down the course centre.
 
-    Not wired into guidance yet (held for the blend law, pending the rate-vs-angle
-    verdict). Exposes a coarse course-following signal that is far more continuous
-    than a distant gate blob:
+    WIRED into HybridController's lateral channel (u_lower centring + curvature
+    lead); measurement-only in VisionServoController. Exposes a coarse
+    course-following signal far more continuous than a distant gate blob:
 
       u_tube    -- horizontal centre of the tube in a LOWER band (nearest/widest,
                    most stable). Keep ~0 to stay centred on the course.
@@ -968,7 +1008,13 @@ class HybridController:
         # --- lateral reference (sim-frame roll setpoint; LATERAL_SIGN, NOT a mirror
         #     -- see module top): GATE -> TUBE -> hold ---
         gate_u = LATERAL_SIGN * gate.u_err if gate.found else 0.0
-        tube_u = LATERAL_SIGN * tube.u_tube if tube.found else 0.0
+        # Tube lateral = near-band centring (u_lower, stay-ON-line) + anticipatory
+        # curvature lead (where the line GOES). Near-band alone is ~0 when centred,
+        # so it flies straight past an off-axis gate; curvature supplies the missing
+        # lateral feedforward toward the next gate. (No absolute-heading reference on
+        # v3385, so the visible corridor IS the heading source.)
+        tube_u = (LATERAL_SIGN * (tube.u_tube + c.k_tube_lead * tube.curvature)
+                  if tube.found else 0.0)
         u_ref = w_gate * gate_u + (1.0 - w_gate) * w_tube * tube_u
 
         # --- filtered PD derivative (dirty-derivative) on u_ref and gate v ---
@@ -1023,9 +1069,11 @@ class HybridController:
             self._last_log_t = now
             logger.info(
                 "[hybrid] g=%s seg=%d frac=%.2f wG=%.2f wT=%.2f | LAT uref=%+.3f "
+                "gsz=%.3f uL=%+.3f crv=%+.3f "
                 "ff_yaw=%+.2f trim(r=%+.2f y=%+.2f) ffB=%+.1fdeg | VERT ff=%.3f trim=%+.3f "
                 "thr=%.3f | DR fwd=%.1f/%.1fm drop=%.1f/%.1fm",
                 active_gate, seg, within_frac, w_gate, w_tube, u_ref,
+                gate.size_frac, tube.u_lower, tube.curvature,
                 ff_yaw_rate, roll_n * MAX_BODY_RATE, yaw_n * MAX_BODY_RATE, ff_bearing,
                 ff_thrust, trim_thrust, thrust,
                 dr_fwd, seg_len, dr_drop, self.schedule.segment_vdrop(seg))
@@ -1036,6 +1084,153 @@ class HybridController:
                            "u_ref": u_ref, "ff_thrust": ff_thrust, "trim_thrust": trim_thrust,
                            "ff_yaw_rate": ff_yaw_rate, "ff_bearing_change": ff_bearing,
                            "gate_found": gate.found, "gate_size": gate.size_frac,
-                           "tube_found": tube.found, "des_roll": des_roll, "des_yaw": des_yaw,
+                           "tube_found": tube.found, "tube_u_lower": tube.u_lower,
+                           "tube_curvature": tube.curvature,
+                           "des_roll": des_roll, "des_yaw": des_yaw,
                            "dr_fwd_dist": dr_fwd, "dr_alt_drop": dr_drop,
                            "seg_length": seg_len, "dr_last_drift": self.dr.last_completed_drift}}
+
+
+# Knobs the semi-auto tuner (tools/tune_openloop.py) is allowed to override, so a
+# tuning iteration never edits source. OpenLoopFlier loads them at construction and
+# logs which it applied, so every flight log records the config it flew.
+OPENLOOP_TUNE_KEYS = frozenset({
+    "ol_thrust_lo", "ol_thrust_hi", "ol_kp_att", "ol_kd_att", "ol_max_rate_rad_s",
+    "ol_max_bank_deg", "ol_fence_deg", "ol_gate_trim", "k_tube_lead", "cruise_pitch_deg",
+})
+_OPENLOOP_TUNE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "openloop_tune.json")
+
+
+def apply_openloop_tune(cfg, path=None):
+    """Override cfg's ol_* knobs from a JSON file, if present. Returns {applied}.
+
+    Resolution: explicit `path` arg > $OPENLOOP_TUNE > repo-root openloop_tune.json.
+    Only keys in OPENLOOP_TUNE_KEYS are honoured (unknown keys are ignored, logged)."""
+    path = path or os.environ.get("OPENLOOP_TUNE") or _OPENLOOP_TUNE_PATH
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("[openloop] tune file %s unreadable (%s) -- using defaults", path, exc)
+        return {}
+    applied = {}
+    for k, v in (data or {}).items():
+        if k in OPENLOOP_TUNE_KEYS:
+            setattr(cfg, k, float(v))
+            applied[k] = float(v)
+        else:
+            logger.warning("[openloop] tune key %r ignored (not a tunable knob)", k)
+    return applied
+
+
+class OpenLoopFlier:
+    """Anti-flip hardcoded flier: the 0.40-probe trajectory + tube steering, MINUS
+    the reactive vertical that flips every other controller.
+
+    Design (see ServoConfig ol_* block):
+      VERTICAL  -- OPEN-LOOP thrust from the measured sink schedule, hard-clamped to
+                   [ol_thrust_lo, ol_thrust_hi]. NO vertical PID, NO thrust feedback.
+                   Thrust is a pure function of the segment -- the runaway source is
+                   simply gone.
+      ATTITUDE  -- a GENTLE hold (ol_kp_att, ~1.0, vs the stiff kp_att=3.0 that winds
+                   up) toward des_pitch=cruise / des_roll=steer, with EVERY commanded
+                   body rate hard-clamped to +/-ol_max_rate_rad_s. A flip needs a
+                   sustained high rate from a positive-feedback loop; there is no such
+                   loop and the rate is clamped small, so a flip is structurally out.
+      LATERAL   -- the ONLY closed loop: tube-curvature steering (u_lower centring +
+                   k_tube_lead*curvature), with a gate-centring fine-trim when a gate
+                   is big/close. Same LATERAL_SIGN convention as the others.
+      FENCE     -- if the gravity-estimated tilt exceeds ol_fence_deg, steering is cut
+                   and the hold recovers toward cruise/level. Belt-and-suspenders on
+                   top of the rate clamp.
+
+    Public API matches VisionServoController/HybridController: command(frame, telem,
+    active_gate) -> {throttle, roll, pitch, yaw}; roll/pitch/yaw are NORMALISED body
+    rates (1.0 == MAX_BODY_RATE), the adapter applies PLANT_RATE_CALIB.
+    """
+
+    def __init__(self, cfg: ServoConfig | None = None, cruise_speed_mps=None,
+                 tune_path=None):
+        self.cfg = cfg or ServoConfig()
+        applied = apply_openloop_tune(self.cfg, tune_path)
+        _warn_cruise_pitch(self.cfg)
+        self.detector = GateDetector(self.cfg)
+        self.tube = TubeDetector(self.cfg)
+        self.schedule = CourseSchedule(cruise_speed_mps or self.cfg.cruise_speed_mps)
+        self._last_log_t = -1e9
+        if applied:
+            logger.warning("[openloop] TUNE overrides applied: %s", applied)
+
+    def reset(self):
+        logger.info("[openloop] reset for fresh race")
+        self._last_log_t = -1e9
+
+    def command(self, frame_rgb, telemetry, active_gate=None, now=None):
+        c = self.cfg
+        now = time.time() if now is None else now
+        gravity = telemetry.get("gravity_frd", (0.0, 0.0, 9.81))
+        gyro = telemetry.get("velocity", (0.0, 0.0, 0.0))
+        p, q, r = float(gyro[0]), float(gyro[1]), float(gyro[2])
+
+        # --- VERTICAL: open-loop thrust from the sink schedule (NO feedback) ---
+        seg = int(np.clip(active_gate if active_gate is not None else 0,
+                          0, self.schedule.n_segments - 1))
+        thrust = float(np.clip(self.schedule.ff_thrust(seg), c.ol_thrust_lo, c.ol_thrust_hi))
+
+        # --- LATERAL: tube-curvature steering (the only closed loop) + gate fine-trim ---
+        tube = self.tube.measure(frame_rgb)
+        gate = self.detector.detect(frame_rgb)
+        u_lat = (LATERAL_SIGN * (tube.u_tube + c.k_tube_lead * tube.curvature)
+                 if tube.found else 0.0)
+        if gate.found and gate.size_frac > c.hybrid_gate_s_lo:
+            w = float(np.clip((gate.size_frac - c.hybrid_gate_s_lo)
+                              / max(c.hybrid_gate_s_hi - c.hybrid_gate_s_lo, 1e-6), 0.0,
+                              c.ol_gate_trim))
+            u_lat = (1.0 - w) * u_lat + w * (LATERAL_SIGN * gate.u_err)
+
+        des_roll = float(np.clip(c.k_bank * u_lat,
+                                 -math.radians(c.ol_max_bank_deg),
+                                 math.radians(c.ol_max_bank_deg)))
+        des_pitch = math.radians(c.cruise_pitch_deg)
+        des_yaw_norm = float(np.clip(c.k_yaw * u_lat, -1.0, 1.0))
+
+        # --- ATTITUDE FENCE: past ol_fence_deg tilt, stop steering + recover ---
+        est_roll, est_pitch = gravity_to_roll_pitch(gravity)
+        fence = math.radians(c.ol_fence_deg)
+        fenced = (abs(est_roll) > fence
+                  or abs(est_pitch - des_pitch) > fence)
+        if fenced:
+            des_roll = 0.0          # level the wings, quit turning
+            des_yaw_norm = 0.0      # (des_pitch stays at cruise: recover toward the glide)
+
+        # --- GENTLE hold -> body rates, HARD-clamped small (no wind-up => no flip) ---
+        roll_rate = c.ol_kp_att * (des_roll - est_roll) - c.ol_kd_att * p    # rad/s
+        pitch_rate = c.ol_kp_att * (des_pitch - est_pitch) - c.ol_kd_att * q  # rad/s
+        yaw_rate = des_yaw_norm * MAX_BODY_RATE - c.ol_kd_att * r            # rad/s
+        lim = c.ol_max_rate_rad_s / MAX_BODY_RATE
+        roll_n = float(np.clip(roll_rate / MAX_BODY_RATE, -lim, lim))
+        pitch_n = float(np.clip(pitch_rate / MAX_BODY_RATE, -lim, lim))
+        yaw_n = float(np.clip(yaw_rate / MAX_BODY_RATE, -lim, lim))
+
+        if now - self._last_log_t >= 0.1:
+            self._last_log_t = now
+            logger.info(
+                "[openloop] g=%s seg=%d ffthr=%.3f | LAT uLat=%+.3f uL=%+.3f crv=%+.3f "
+                "gsz=%.3f desR=%+.1f | EST roll=%+.1f pitch=%+.1f %s | rate(r=%+.2f "
+                "p=%+.2f y=%+.2f)rad/s",
+                active_gate, seg, thrust, u_lat, tube.u_lower, tube.curvature,
+                gate.size_frac, math.degrees(des_roll),
+                math.degrees(est_roll), math.degrees(est_pitch), "FENCE" if fenced else "",
+                roll_n * MAX_BODY_RATE, pitch_n * MAX_BODY_RATE, yaw_n * MAX_BODY_RATE)
+
+        return {"throttle": thrust, "roll": roll_n, "pitch": pitch_n, "yaw": yaw_n,
+                "_debug": {"active_gate": active_gate, "seg": seg, "ff_thrust": thrust,
+                           "u_lat": u_lat, "tube_found": tube.found,
+                           "tube_u_lower": tube.u_lower, "tube_curvature": tube.curvature,
+                           "gate_found": gate.found, "gate_size": gate.size_frac,
+                           "des_roll": des_roll, "des_pitch": des_pitch,
+                           "est_roll": est_roll, "est_pitch": est_pitch, "fenced": fenced,
+                           "roll_n": roll_n, "pitch_n": pitch_n, "yaw_n": yaw_n}}

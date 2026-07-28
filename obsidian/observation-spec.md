@@ -39,6 +39,39 @@ At level attitude it is `[0, 0, -1]` (FLU body z is up, so "down" is −z).
   Sanity: at rest the accel reads ~+g "up" → gravity-down in FRD is `[0,0,+1]`;
   `C @ [0,0,1] = [0,0,-1]` ✓ matches train's level value.
 
+> ⚠️ **Measured resting-attitude offset (from the first live A1 run).** At rest
+> the accelerometer reads `[-2.999, -0.003, -9.340] m/s²` (`|a| = 9.810`, i.e.
+> pure 1 g — non-accelerating). That is gravity-down in FRD `= [0.306, 0.000,
+> 0.952]`, a **pure ~17.8° NOSE-DOWN pitch, ~0° roll** — the +x (forward)
+> component means gravity pulls partly forward in body, so the nose is pitched
+> down: `atan2(-g_x, g_z) = atan2(-0.306, 0.952) = -17.8°`, y-component ~0. The
+> training env spawns **identity-level** (`drone_race_env.py:495`,
+> `qpos[3:7] = [1,0,0,0]`), so at t=0 train `gravity_unit` is `[0,0,-1]` but the
+> deploy value is `[0.306, 0, 0.952]`-derived — a real train/deploy mismatch at
+> the start of every episode. This must be resolved before B5, but **not by
+> hardcoding a number**:
+>
+> - **(A) Non-level body spawn (working hypothesis).** The 17.8° is the drone's
+>   actual body attitude at start (a **nose-down** forward-pitched pose): pure
+>   pitch, no roll — exactly what a body-attitude offset looks like, and the
+>   |a|=1 g reading is clean. If so, the fix is to bake this start attitude into
+>   the env spawn quaternion (B5) using the **nose-down** sign (a −17.8° pitch
+>   about body y, i.e. `qpos[3:7]` for pitch = −17.8°, NOT +17.8°), and keep the
+>   deploy filter's `R_mount = identity`.
+> - **(B) IMU mount offset.** The 17.8° is a fixed body→IMU rotation, not body
+>   attitude. This **conflicts with the external spec's §3.8 claim that body→IMU
+>   is the identity map** — under identity, *no* mount tilt should appear in the
+>   IMU. The measured 17.8° sitting close to the documented **+20° camera tilt**
+>   (`FPV_TILT_DEG`) hints at a mount coupling despite that identity claim. If
+>   this is the truth, the fix is a fixed `R_mount` in deploy and the env spawn
+>   stays level.
+>
+> The de-risk flight resolves A vs B: **(i)** was the rest reading on the ground
+> or airborne? and **(ii)** does the vector stay pure-pitch (no roll) as the
+> drone maneuvers? Until then, A2's `GravityEstimator.R_mount` is a configurable
+> rotation defaulting to **identity**, and neither the env spawn nor `R_mount` is
+> touched.
+
 **Worked NON-LEVEL example — this is the one that matters.** The old z-axis bug
 passed at identity and only failed under rotation, so the contract (and the
 test) must agree at a tilted attitude. At **roll = 30°, pitch = 30°, yaw = 0**:
@@ -50,6 +83,23 @@ test) must agree at a tilted attitude. At **roll = 30°, pitch = 30°, yaw = 0**
 
 Both sides MUST produce `[0.5, -0.433013, -0.75]` here. Agreement only at level
 is NOT sufficient evidence of a correct transform.
+
+#### A2 `GravityEstimator` requirements (from the first live run)
+In flight the raw accel is wildly nonphysical — a logged in-flight sample read
+`[-388, -838, -992] m/s²` (`|a| ≈ 1355`, ~138 g), so accel cannot be trusted
+frame-to-frame. The filter MUST:
+1. **Low accel-trust gain.** Complementary blend weight `α ≈ 0.01–0.03` at the
+   ~115 Hz IMU rate — gyro integration carries attitude, accel only slowly
+   corrects drift.
+2. **Magnitude-gated outlier rejection.** Use an accel sample only when
+   `0.85 g ≤ |accel| ≤ 1.15 g`; otherwise skip the correction and propagate on
+   gyro alone for that step.
+3. **Gyro-only fallback.** The estimate must stay stable through an entire window
+   of rejected accels (e.g. the 138 g spike), integrating `ġ = -ω × g`.
+
+The **de-risk flight** logs the filter's steady-state residual (gravity estimate
+vs gyro/accel disagreement) under aggressive flight; that measured envelope —
+not a guess — sets the gravity-direction noise injected in B5.
 
 #### `body_rates` (dims 3–5)
 Angular velocity in FLU body frame, rad/s.
@@ -169,4 +219,6 @@ After A1+A2 are live, fly a few real races logging the filter's gravity estimate
 and its internal gyro-vs-accel disagreement under aggressive flight. The
 measured residual-error envelope sets the gravity-direction noise injected in
 B5's `_get_minimal_state`, so we train on the noise we will actually deploy
-into. Local, pre-DGX.
+into. Local, pre-DGX. **Mandatory — see the A2 `GravityEstimator` requirements
+above; the low-α + magnitude-gated design is what makes this residual small
+enough to be a usable noise floor.**

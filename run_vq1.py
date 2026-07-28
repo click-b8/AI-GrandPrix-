@@ -479,7 +479,8 @@ async def run(
 
     use_vision_servo = (controller == "vision-servo")
     use_hybrid = (controller == "hybrid")
-    use_hardcoded = use_vision_servo or use_hybrid
+    use_open_loop = (controller == "open-loop")
+    use_hardcoded = use_vision_servo or use_hybrid or use_open_loop
     if use_hardcoded:
         logger.warning(
             "[CONTROLLER] HARDCODED %s (NO RL model). Gate detection + guidance are "
@@ -549,7 +550,10 @@ async def run(
     # _active_gate. Resets on the GO edge so a prior race can't bleed in.
     command_source = None
     if use_hardcoded:
-        if use_hybrid:
+        if use_open_loop:
+            from vq1_vision_servo import OpenLoopFlier
+            _servo = OpenLoopFlier()
+        elif use_hybrid:
             from vq1_vision_servo import HybridController
             _servo = HybridController()
         else:
@@ -627,6 +631,21 @@ async def run(
                 "%d send errors occurred. Check UDP host/port and network connectivity.",
                 adapter.send_errors,
             )
+        # THROTTLE-DOWN before disarm. The sim requires throttle-at-zero to re-arm the
+        # NEXT race -- otherwise re-clicking Race gives a flashing "THROTTLE DOWN"
+        # warning and the drone won't take off (hit on the 2nd+ tuning flight). Send a
+        # few zero-thrust, zero-rate SET_ATTITUDE_TARGET frames (type_mask=128, same as
+        # the control path) so the sim registers idle, THEN disarm.
+        if sim_conn is not None:
+            try:
+                for _ in range(5):
+                    sim_conn.mav.set_attitude_target_send(
+                        0, sim_conn.target_system, sim_conn.target_component,
+                        128, [1.0, 0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0)  # zero rates, thrust=0
+                    time.sleep(0.02)
+                logger.info("Throttle-0 idle sent before disarm.")
+            except Exception as exc:
+                logger.warning("Throttle-0 idle send failed: %s", exc)
         # DISARM on graceful shutdown. We ARM at startup but never disarmed, which
         # may leave the sim's drone/race stuck so it won't auto-arm the next race
         # (grinder attempts 2+ then wait forever for a GO). Disarm to hand the sim a
@@ -678,12 +697,15 @@ if __name__ == "__main__":
                              "Logs every [Race Status] line. Confirms whether the sim gives "
                              "a re-armed persistent client a 2nd GO -> one-process grinder.")
     parser.add_argument("--controller", default="model",
-                        choices=["model", "vision-servo", "hybrid"],
+                        choices=["model", "vision-servo", "hybrid", "open-loop"],
                         help="model: distilled RL policy. vision-servo: HARDCODED "
                              "gate-centering (vq1_vision_servo.py). hybrid: three-tier "
                              "open-loop glide + tube lane-keeping + gate trim (uses the "
                              "THRUST_SINK_MAP; scaffold until descent-probe numbers land). "
-                             "All reuse the same arm/TIMESYNC/GO/SET_ATTITUDE_TARGET path.")
+                             "open-loop: ANTI-FLIP flier -- open-loop sink-schedule thrust "
+                             "(no vertical PID) + gentle hard-clamped attitude + tube-curvature "
+                             "steering (the only closed loop). All reuse the same "
+                             "arm/TIMESYNC/GO/SET_ATTITUDE_TARGET path.")
     parser.add_argument("--vision-port", type=int, default=5600,
                         help="UDP port for DCL FPV vision stream (VADR-TS-002 s4.6, default 5600)")
     parser.add_argument(

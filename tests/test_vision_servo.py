@@ -18,8 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vq1_vision_servo import (  # noqa: E402
     ServoConfig, VisionServoController, GateDetector, TubeDetector,
-    HybridController, CourseSchedule, DeadReckoner, thrust_for_sink, THRUST_SINK_MAP,
-    gravity_to_roll_pitch, rgb_to_hsv_arrays,
+    HybridController, OpenLoopFlier, CourseSchedule, DeadReckoner, thrust_for_sink,
+    THRUST_SINK_MAP, gravity_to_roll_pitch, rgb_to_hsv_arrays, MAX_BODY_RATE,
 )
 
 # Bright RED gate, matching the calibrated red-wraparound band (hue ~0, high V).
@@ -557,6 +557,69 @@ def test_deadreckoner_integrates_and_resets_on_advance():
     dr.on_gate_advance(completed_segment_length=0.7)
     assert abs(dr.last_completed_drift - (before - 0.7)) < 1e-9   # drift recorded
     assert dr.fwd_dist == 0.0          # reset to ground truth for the new segment
+
+
+# --------------------------------------------------------------------------
+# OpenLoopFlier -- the anti-flip controller
+# --------------------------------------------------------------------------
+def test_openloop_thrust_is_open_loop():
+    # Thrust must NOT depend on attitude/gyro (no vertical feedback = no runaway).
+    frame = make_tube_frame(gate_cx=0.5)
+    calm = {"gravity_frd": (0.0, 0.0, 9.81), "velocity": (0.0, 0.0, 0.0)}
+    wild = {"gravity_frd": (5.0, 4.0, 7.0), "velocity": (6.0, -6.0, 3.0)}
+    o_calm = OpenLoopFlier().command(frame, calm, active_gate=2, now=1.0)
+    o_wild = OpenLoopFlier().command(frame, wild, active_gate=2, now=1.0)
+    assert abs(o_calm["throttle"] - o_wild["throttle"]) < 1e-9   # thrust ignores attitude
+    # and it equals the schedule ff_thrust for that segment, within the hard clamp.
+    c = ServoConfig()
+    sched = CourseSchedule(c.cruise_speed_mps)
+    expect = min(max(sched.ff_thrust(2), c.ol_thrust_lo), c.ol_thrust_hi)
+    assert abs(o_calm["throttle"] - expect) < 1e-9
+
+
+def test_openloop_thrust_within_hard_clamp_all_segments():
+    c = ServoConfig()
+    for seg in range(6):
+        thr = OpenLoopFlier().command(make_tube_frame(gate_cx=0.5), telem(),
+                                      active_gate=seg, now=1.0)["throttle"]
+        assert c.ol_thrust_lo - 1e-9 <= thr <= c.ol_thrust_hi + 1e-9
+
+
+def test_openloop_rates_never_exceed_hard_clamp():
+    # No commanded body rate may exceed ol_max_rate_rad_s -- structurally no wind-up.
+    c = ServoConfig()
+    lim = c.ol_max_rate_rad_s
+    # throw hostile inputs: extreme tilt + spin + off-centre gate.
+    for grav in [(0.0, 0.0, 9.81), (8.0, 6.0, 4.0), (-7.0, -5.0, 3.0)]:
+        for gyro in [(0.0, 0.0, 0.0), (10.0, -10.0, 8.0), (-12.0, 9.0, -6.0)]:
+            o = OpenLoopFlier().command(make_tube_frame(gate_cx=0.85, gate_sz=0.2),
+                                        {"gravity_frd": grav, "velocity": gyro},
+                                        active_gate=1, now=1.0)
+            for k in ("roll", "pitch", "yaw"):
+                assert abs(o[k] * MAX_BODY_RATE) <= lim + 1e-6, f"{k} exceeded clamp"
+
+
+def test_openloop_fence_cuts_steering_when_tilted():
+    # Past ol_fence_deg roll, steering (des_roll) is cut to 0 even with a hard tube bend.
+    c = ServoConfig()
+    over = math.radians(c.ol_fence_deg + 10.0)
+    grav = (0.0, math.sin(over) * 9.81, math.cos(over) * 9.81)  # large roll estimate
+    frame = make_tube(x_lower_frac=0.5, x_upper_frac=0.85)      # strong right curvature
+    o = OpenLoopFlier().command(frame, {"gravity_frd": grav, "velocity": (0.0, 0.0, 0.0)},
+                                active_gate=1, now=1.0)
+    assert o["_debug"]["fenced"] is True
+    assert abs(o["_debug"]["des_roll"]) < 1e-9                  # steering cut
+
+
+def test_openloop_tube_curvature_steers():
+    # A right-bending tube (far band right of near) must produce a lateral command,
+    # and with LATERAL_SIGN=-1 a right bend -> negative des_roll (right translation).
+    straight = OpenLoopFlier().command(make_tube(x_lower_frac=0.5, x_upper_frac=0.5),
+                                       telem(), active_gate=1, now=1.0)
+    rightbend = OpenLoopFlier().command(make_tube(x_lower_frac=0.5, x_upper_frac=0.85),
+                                        telem(), active_gate=1, now=1.0)
+    assert abs(straight["_debug"]["u_lat"]) < abs(rightbend["_debug"]["u_lat"])
+    assert rightbend["_debug"]["des_roll"] < 0.0               # right bend -> right translation
 
 
 if __name__ == "__main__":

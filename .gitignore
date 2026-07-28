@@ -44,3 +44,6 @@ trajectory_plot.html
 # grinder machine-specific / runtime artifacts
 ui_reset.json
 grind_logs/
+openloop_tune.json
+tune_logs/
+openloop_tune_journal.jsonl

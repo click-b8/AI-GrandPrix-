@@ -29,7 +29,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from vq1_vision_servo import ServoConfig, VisionServoController  # noqa: E402
+from vq1_vision_servo import ServoConfig, VisionServoController, TubeDetector  # noqa: E402
 
 
 def load_image(path):
@@ -69,11 +69,20 @@ def main():
     src.add_argument("--synthetic", nargs=2, type=float, metavar=("CX", "CY"),
                      help="synthesise a gate at fractional (cx, cy), e.g. 0.75 0.4")
     ap.add_argument("--overlay", help="write a mask/centroid overlay PNG here")
+    ap.add_argument("--tube", action="store_true",
+                    help="measure the CYAN GUIDANCE TUBE (TubeDetector) instead of the gate")
     # threshold overrides (all optional; default to ServoConfig)
     ap.add_argument("--hue-lo", type=float)
     ap.add_argument("--hue-hi", type=float)
     ap.add_argument("--sat-min", type=float)
     ap.add_argument("--val-min", type=float)
+    # tube-band overrides (only used with --tube)
+    ap.add_argument("--tube-hue-lo", type=float)
+    ap.add_argument("--tube-hue-hi", type=float)
+    ap.add_argument("--tube-sat-min", type=float)
+    ap.add_argument("--tube-val-min", type=float)
+    ap.add_argument("--dim", type=float, default=1.0,
+                    help="scale frame brightness by this (robustness check, e.g. 0.7)")
     ap.add_argument("--no-bright", action="store_true",
                     help="disable the bright/near-white fallback mask")
     args = ap.parse_args()
@@ -84,8 +93,28 @@ def main():
     if args.sat_min is not None: cfg.gate_sat_min = args.sat_min
     if args.val_min is not None: cfg.gate_val_min = args.val_min
     if args.no_bright: cfg.gate_use_brightness_fallback = False
+    if args.tube_hue_lo is not None: cfg.tube_hue_lo = args.tube_hue_lo
+    if args.tube_hue_hi is not None: cfg.tube_hue_hi = args.tube_hue_hi
+    if args.tube_sat_min is not None: cfg.tube_sat_min = args.tube_sat_min
+    if args.tube_val_min is not None: cfg.tube_val_min = args.tube_val_min
 
     frame = load_image(args.image) if args.image else synthetic(*args.synthetic)
+    if args.dim != 1.0:
+        frame = np.clip(frame.astype(np.float32) * args.dim, 0, 255).astype(np.uint8)
+
+    if args.tube:
+        td = TubeDetector(cfg)
+        m = td.measure(frame)
+        print(f"frame: {frame.shape[1]}x{frame.shape[0]}  dim={args.dim}  "
+              f"TUBE band: hue[{cfg.tube_hue_lo},{cfg.tube_hue_hi}] "
+              f"sat>={cfg.tube_sat_min} val>={cfg.tube_val_min}")
+        print(f"\nTUBE: found={m.found}  area_frac={m.area_frac:.4f}")
+        print(f"  u_lower={m.u_lower:+.3f} (+=tube right of us)   "
+              f"u_upper={m.u_upper:+.3f}   curvature={m.curvature:+.3f} (+=bends right ahead)")
+        if args.overlay:
+            import types
+            write_overlay(frame, types.SimpleNamespace(found=False), td._mask(frame), args.overlay)
+        return
     print(f"frame: {frame.shape[1]}x{frame.shape[0]}  "
           f"thresholds: hue[{cfg.gate_hue_lo},{cfg.gate_hue_hi}] "
           f"sat>={cfg.gate_sat_min} val>={cfg.gate_val_min} "
