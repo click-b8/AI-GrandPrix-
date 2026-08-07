@@ -1,0 +1,4 @@
+# Checksum records must stay byte-exact LF so `sha256sum -c` accepts them on any
+# platform; core.autocrlf=true would otherwise hand Windows checkouts a CRLF and a
+# filename with a trailing .
+*.sha256 -text

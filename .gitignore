@@ -17,3 +17,6 @@ archive/rl-training/AI_GrandPrix_Models/
 archive/rl-training/evaluations.npz
 results/overnight-2026-08-03/gate3_leg_traces/
 results/overnight-2026-08-03/diagnostic/
+# The raw dataset tarball itself: ships as a Release asset, never as a blob.
+# Its .sha256 IS tracked so a download can be verified against the repo.
+results/*.tar.gz

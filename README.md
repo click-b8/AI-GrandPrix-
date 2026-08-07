@@ -1,162 +1,45 @@
-# AI Grand Prix — SCUBA Lab
-**Anduril AI Grand Prix** | FAU SCUBA Lab / MPCR Lab | VQ1 — vision + IMU
+# AI Grand Prix — VQ1 Autonomous Racing Drone
 
-> **Source of truth for a fresh session.** Read this before re-deriving
-> anything. The transport/harness layer is solved and verified byte-equivalent
-> to the official sample client. The problem is now exactly one thing: the
-> updated sim blocks the state telemetry, so VQ1 needs a **vision + IMU policy
-> on a 10-D observation, retrained from scratch.** Don't re-debug the verified
-> transport layers; don't try to fly an existing checkpoint — it can't.
+Vision-only autonomous drone racing for the [AI Grand Prix](https://www.theaigrandprix.com) (Anduril / DCL / Neros) Virtual Qualifier — a controller that flies a simulated racing drone through a gate course using **only a forward camera feed over MAVLink**: no GPS, no position telemetry, no absolute coordinates.
 
----
+![Qualification funnel](docs/img/funnel.png)
 
-## 🛑 What changed — the VQ1 sim now blocks state telemetry (June 2026)
+## Outcome, honestly
 
-Confirmed against the official **v1.0.3379** sample client (`PyAIPilotExample-v2`):
-`mavlink_rx.py` marks **ATTITUDE**, **LOCAL_POSITION_NED**, and **ODOMETRY** as
-*"disabled in the latest version of the simulator,"* and gate positions are
-*"nulled."* **HIGHRES_IMU (accel + gyro)** and the **vision stream** survive.
-(The VQ2 spec VADR-TS-003 §9.3 blocks are now live in VQ1.)
+**We did not qualify.** The final overnight campaign ran **546 unattended attempts**: 92% passed Gate 1, 55% passed Gate 2, and **zero registered Gate 3** — the binding constraint. What the campaign produced instead is the more interesting artifact: a 302-run forensic dataset proving the failures were **systematic, not random** — two deterministic trajectory populations (a 3.12 s "straight" transit and a 6.67 s "veer", separated at 97.6% by leg duration alone), a commit-latch mechanism shown to be a *symptom* of the fork rather than its cause, and a replay-validated improvement to the commit rule that was never flown because simulator access ended at the deadline. The full analysis is in [docs/findings.md](docs/findings.md).
 
-**Consequence — every existing checkpoint is unflyable.** Our model requires a
-19-D state; **12 of those dims** (rot_6d, lin_vel, position) come from the now-
-dead ATTITUDE/LOCAL_POSITION_NED. With their source messages gone, those dims
-are pinned to startup defaults, so the model is fed a constant **"level / still
-/ at origin" lie** every frame while the drone is actually tilting and
-accelerating. This is **not a bad-weights problem** — it is an
-**observation-availability problem.** No checkpoint of the old observation can
-fly here, because the observation it was trained on no longer exists.
+![Crossing scatter](docs/img/crossing_scatter.png)
 
-Only **7 of 19** dims survive: body_rates (HIGHRES_IMU gyro) + prev_action
-(self). VQ1 and VQ2 have **converged on the same vision-only problem.**
+## What's here
 
----
-
-## ✅ Verified and standing — the transport/harness layer
-
-Audited byte-for-byte against the v1.0.3379 sample client; this work stands:
-
-| Layer | Evidence |
+| area | contents |
 |---|---|
-| MAVLink transport (UDP 14550) | connection/arm/heartbeat match the sample |
-| Race start | **Clean legal GO** (FPV-confirmed); stale-clock gate; ENCAPSULATED_DATA race-status parse `<BQqqIq` matches the sample exactly |
-| Control send | `SET_ATTITUDE_TARGET` `type_mask=128`, identity quat, rates+thrust — **identical** to the sample's attitude path |
-| Vision header | `"<IHHIIQ"` (24 B) — **identical** to the sample |
-| Timesync | `timesync_send(now_ns, 0)` @ 10 Hz — identical |
-| Body-rate frame | `qvel[3:6]` body-frame check confirmed; deploy `C·ω` (FRD→FLU) correct — **carries forward** to the new obs |
+| `tools/schedule_flier.py` | The flight controller: 3,900 lines, vision-servo "coast-tube" pipeline — gate detection → lateral bank servo with a derivative-aware commit latch → vertical trim with terminal descent + bounded blind hold. ~150 CLI flags encode the tuning campaign's full experiment history. |
+| `vq1_vision_servo.py` | Vision pipeline: HSV blob gate detector → filtered (u_f, v_f, sz_f) servo signals. |
+| `automation/` | `run_qualifier_batch.ps1` — unattended best-of-N harness: simulator process lifecycle (PID-tracked, port-isolation asserted), SendInput keystroke race resets, arm-before-restart sequencing, per-run classification, self-purging disk management. |
+| `analysis/` | `flight_report.py` (per-run verdict + JSON contract) and trajectory tooling. |
+| `tests/` | ~530 tests: controller logic, latch behavior, batch lifecycle, MAVLink compliance. |
+| `docs/` | [Architecture](docs/architecture.md) · [Controller](docs/controller.md) · [Vision](docs/vision.md) · [Automation](docs/automation.md) · [Experiments](docs/experiments.md) · [Overnight batch](docs/overnight_batch.md) · [Findings](docs/findings.md) · [Lessons learned](docs/lessons_learned.md) · [Future work](docs/future_work.md) |
+| `results/overnight-2026-08-03/` | The final experiment: summary CSV, per-run JSON, top-10 closest traces, and [REPRODUCE.md](results/overnight-2026-08-03/REPRODUCE.md). Full 1 GB raw dataset ships as a GitHub Release asset. |
+| `archive/` | Earlier eras, preserved and indexed: RL training, DCL hardware integration, ~560 manual tuning runs, abandoned experiments. |
 
-The transport is not the bottleneck and is not in question. What's invalidated
-is the **observation**, not the harness.
+## The problem in one paragraph
 
----
+The simulated drone coasts nose-down (~−17.8° pitch, uncontrollable) with a hard thrust ceiling that removes climb authority: the controller can steer **bank** and modulate **descent** only, from a camera whose gate detector is a color-blob centroid — no corners, no pose. Every gate approach is therefore a one-shot ballistic intercept steered by two error scalars, ending with the gate leaving the frame ~2.4 m before the plane and the final half-second flown blind. Loop rate on the target hardware swung 39–117 Hz, which became its own research problem.
 
-## 🎯 Active priority — VQ1 as a vision + IMU policy
+## Headline findings
 
-The path forward is a policy on a **10-D observation built only from un-blocked
-sources**, retrained from scratch:
+![Duration bimodality](docs/img/duration_bimodal.png)
 
-```
-state (10-D) = gravity_unit[3] (FLU) + body_rates[3] (FLU) + prev_action[4]
-image        = (FPV_FRAME_STACK × 3, 48, 48) RGB, consecutive frames
-```
+1. **The Gate-3 miss modes are two deterministic trajectories, not noise.** Leg transit time is perfectly bimodal (3.12 s vs 6.67 s, empty gap between); the fast population arrives laterally centered but high, the slow population veers left but vertically centered. Where a run crossed the gate plane sampled the entire error space across 302 runs — and registered zero — proving a systematic cause, not variance to be harvested with more attempts.
+2. **The commit latch is a symptom, not the fork.** 67 fast runs never latched yet flew straight; 14 slow runs latched yet veered. The populations diverge in u_f *before* the latch is even eligible. But the latch matters as a terminal instrument: latched fast runs crossed at |u_f| 0.088 median vs 0.254 unlatched — it blinds the servo to a terminal parallax spike.
+3. **The dominant latch blocker was structural:** in 43% of runs the arm precondition (filtered gate size dipping below the commit threshold between gates) never occurred. An offline replay across all 302 runs found a strictly dominating rule (size 0.20 / align 0.12 / rate 0.16) — 86:1 confusion, all top-10 runs preserved — that was never flown.
+4. **"Median loop rate selects the miss mode" was a proxy, not a cause** — believed for a day, then falsified by the same dataset that suggested it (the best centered runs came from low-rate machines flying the fast leg).
 
-- `gravity_unit` ← HIGHRES_IMU accel + gyro via a complementary/Mahony filter
-  (gravity-down unit vector in body frame; recovers roll/pitch).
-- `body_rates` ← HIGHRES_IMU gyro. `prev_action` ← self.
-- **Yaw, position, and velocity are unobservable** from un-blocked sources →
-  the **image sequence carries all navigation**, so a real multi-frame stack and
-  **visual domain randomization are mandatory and load-bearing** (the env
-  currently has none — fixed lighting/gate-colors/background).
+## Reproducing the final experiment
 
-**The train==deploy contract is [`obsidian/observation-spec.md`](obsidian/observation-spec.md)** —
-the single spec both the env builder and the deploy adapter must implement
-byte-identically. Its guardrail, `tests/test_observation_contract.py`, **must
-be green (cross-builder layer un-skipped and passing) before any GPU time.**
+See [results/overnight-2026-08-03/REPRODUCE.md](results/overnight-2026-08-03/REPRODUCE.md) for the exact frozen controller flags, the batch command, environment assumptions, and the analysis pipeline. Note: the official simulator requires an online account login and qualifier access, which **ended at the competition deadline** — the dataset and replay tooling here are what remain reproducible.
 
-**Work order:** A1 accelerometer capture (done) → A2 gravity filter → A3 10-D
-adapter + real frame stack → A4 IMU-based hover probe → measure filter residual
-envelope (local) → B5 env emits the same 10-D obs → B6 visual DR → B7 frame
-stack 3–4 → B8 DGX run (`MUJOCO_GL=egl`, with an early eval gate-1 kill-criterion).
+## License & provenance
 
-```bash
-python3 run_vq1.py --host <dcl_ip> --port <dcl_port>   # [IMU] line confirms accel/gyro live
-```
-
----
-
-## 🤖 Model inventory — all current checkpoints are now unflyable
-
-All checkpoints below were trained on the old 19-D state and **cannot fly the
-updated sim** (12 of 19 dims dead, per above). They are retained for reference
-only; the next flying model comes from the vision+IMU retrain.
-
-⚠️ **`aigp_distill_11600000_steps.zip` and `aigp_finetune_tilt_final.zip` are
-the SAME FILE** — byte-identical, SHA256 `1C5F6D3C…`, 12,868,185 bytes. Swapping
-between them is a no-op; do not re-run that "swap."
-
-| File | SHA256 | Bytes | Note |
-|---|---|---|---|
-| `aigp_distill_final.zip` | `81EF9BDF…` | 13,210,546 | Loaded by `run_vq1.py`; only genuinely distinct vision model. Unflyable on dead state. |
-| `aigp_finetune_tilt_final.zip` | `1C5F6D3C…` | 12,868,185 | Byte-identical to `aigp_distill_11600000_steps.zip`; diverged finetune |
-| `aigp_distill_11600000_steps.zip` (repo root) | `1C5F6D3C…` | 12,868,185 | Same file as above, different name |
-| `aigp_racer_final.zip` | — | 516,544 | State-based teacher (PPO) |
-| `aigp_8gates_final.zip` | — | 516,485 | State-based reference |
-
----
-
-## 🧠 Architecture (target: vision + IMU, 10-D)
-
-```
-DCL FPV Camera (640×360, UDP 5600)
-        ↓ DCLVisionReceiver → resize 48×48, rolling stack of N consecutive frames
-  Coarse-to-Fine CNN ┐
-                     ├─→ PPO Policy → CTBR [throttle, roll, pitch, yaw]
-  State (10-D) ──────┘                 ↓ × MAX_BODY_RATE (12 rad/s)
-   gravity_unit + body_rates + prev_action   SET_ATTITUDE_TARGET (MAVLink v2)
-        ↑                                            ↓
-  HIGHRES_IMU (accel+gyro) → complementary filter   DCL Flight Controller
-```
-
-The 19-D state path (`rot_6d + lin_vel + ang_rates + prev_action + position`)
-is **retired** — its ATTITUDE/LOCAL_POSITION_NED sources are blocked. The new
-observation is defined in `obsidian/observation-spec.md`.
-
-**Key files:**
-```
-run_vq1.py              ← VQ1 entry point; MAVLink RX (now captures IMU accel)
-dcl_vision_receiver.py  ← Threaded UDP JPEG frame receiver ("<IHHIIQ")
-dcl_adapter.py          ← Vision model wrapper + observation build (→ 10-D, A3)
-dcl_mavlink_adapter.py  ← MAVLink v2 control send (verified vs sample client)
-drone_race_env.py       ← Training env (observation source of truth; → 10-D, B5)
-config.py               ← All hyperparameters
-obsidian/observation-spec.md  ← train==deploy 10-D contract (READ THIS)
-tests/test_observation_contract.py  ← guardrail; green before GPU time
-models_release/         ← Deployable model artifacts
-```
-
----
-
-## 📚 References
-
-- **Swift** — Champion-level drone racing (Nature 2023). CTBR, privileged distillation
-- **SkyDreamer** — TU Delft, world-model pixel-to-motor, A2RL Multi-Drone Race 2026 (arXiv 2510.14783)
-- **MonoRace** — TU Delft, A2RL × DCL 2025 winner; proves vision+IMU racing on this recipe
-- **VADR-TS-002 / VADR-TS-003** — DCL technical specs (TS-003 §9.3 = the telemetry block, now live in VQ1)
-- **PyAIPilotExample-v2 (sim v1.0.3379)** — official sample client; transport ground truth
-
-## 📖 Full Wiki
-
-```
-obsidian/
-├── observation-spec.md     ← train==deploy 10-D vision+IMU contract (authoritative)
-├── current-plan.md         ← Prioritized plan
-├── vq1-run-notes.md        ← Run history
-├── fragilities.md          ← Known failure modes
-├── models.md               ← Model artifact details
-├── experiments-log.md      ← Training history
-└── open-questions.md       ← Known unknowns
-```
-
----
-
-*SCUBA Lab, FAU | Machine Perception and Cognitive Robotics Laboratory*
+Built by a one-person team for AI-GP Virtual Qualifier Round 1 (July–August 2026). The simulator and its assets are the property of the AI Grand Prix and are **not** included here.
