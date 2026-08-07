@@ -1,0 +1,317 @@
+[STAMP] EXEC FILE = C:\Users\nohab\Desktop\AI GP\AI-GrandPrix-\tools\schedule_flier.py
+[STAMP] schedule_flier.py sha=46315e331e mtime=2026-08-03T00:48:16 git=e5dfbfc
+[STAMP] mode=coast-tube cruise=8.0 level_thrust=0.275 sink_slope=17.6 banks=[0..5] pulse_s=0.5 thrust_bias=0.0 flip=False
+[STAMP]   seg0 SPAWN->START thr=0.275 bank=+5.0 slope=-1.3
+[STAMP]   seg1 START->g1 thr=0.178 bank=+10.8 slope=+12.1
+[STAMP]   seg2 g1->g2 thr=0.135 bank=-13.0 slope=+17.1
+[STAMP]   seg3 g2->g3 thr=0.143 bank=+12.4 slope=+16.2
+[STAMP]   seg4 g3->g4 thr=0.260 bank=-21.0 slope=+1.9
+[STAMP]   seg5 g4->FINIS thr=0.263 bank=+18.4 slope=+1.5
+[sched] tune overrides: {'cruise_pitch_deg': -24.0, 'ol_kp_att': 3.0}
+[tube] *** --gate-vert-coast-bias -0.030 FORCED to 0.000: the altitude ladder owns the between-gate descent and a leg-independent bias on top of it double-counts. ***
+[tube] cruise 8.0 m/s bias +0.000 | PITCH=PURE COAST (hold removed), THRUST=CONST 0.275 (sink-map schedule OVERRIDDEN) | LEVEL-LOCK off (--gate-vert-level-band 0) | ALTITUDE LADDER per-leg [-0.005, 0.039, 0.024, 0.033, 0.004, 0.003] anchor 0.035 @ leg2 (+17.1deg) scale 1.00 overrides {0: -0.005, 1: 0.039, 2: 0.024} (leg index = ACTIVE_GATE) | slew up 0.60/s down 0.60/s + GATE-VERT trim PER-LEG by active_gate ag0[-0.045,+0.060] ag1[-0.015,+0.100] ag2[-0.015,+0.100] ag3[-0.015,+0.100] ag4[-0.015,+0.100] ag5[-0.015,+0.100] (last entry fills any higher ag) kv=0.16 kdv=0.1 size>=0.05 dead-decay=1.5s -> bias +0.000 (= HOLD the leg baseline) + VERT COMMIT sz_f>=0.18 on ag<=0 ONLY: freeze the PD, ease the held trim to the leg baseline over tau=0.20s (reversible, not a latch). ag>0 keeps the LIVE PD so the arrest can fire (flt40 plunged at gate 2 with the commit applied everywhere), LATERAL=GATE-CENTRING(closed) k=1.0 clamp 11deg size>=0.10 -- the ONLY steering law (no rail lateral flag passed). RAIL DETECTOR ON EVERY leg (--log-tube), HALF res ~3.4 ms/frame (reuses the gate detector array; agrees with full res to 0.0002 in offset) + CLOSE-RANGE COMMIT, ag>=2 ONLY: sz_f>=0.16 slews des_roll -> 0 over tau=0.20s (reversible, not a latch). ag<2 UNTOUCHED: commit_k forced to exactly 1.0 = bit-for-bit the --gate-commit-size 0 law (flt9's; NOT flt11's, which ran the commit unscoped on ag 0-1), NO backbone flip=False | POST-GATE HOLD: hold gate-1 exit cmd for 1.5s, decay tau 0.5s, resume at size>=0.20, live-corr 30%. | LEG1 BANK +5.0deg LEFT (on ag==1, summed with centring then clamped) | LEG2 (ag==2) PRE-TURN -4.5deg RIGHT, vision clamp 9deg (TIGHTER than the global 11 -- feed-forward leads) | GATE FILTER tau=0.20s hold=0.40s fade=0.50s (shared by BOTH loops) | TUBE FILTER shares those constants (log-only) | kp_att=3.0 kd_att=0.05
+[tube]   seg0 SPAWN->START slope  -1.3 d+0.0050 OVERRIDE thr 0.280       | bank    -- (backbone off)
+[tube]   seg1 START->g1    slope +12.1 d-0.0390 OVERRIDE thr 0.236       | bank    -- (backbone off)
+[tube]   seg2    g1->g2    slope +17.1 d-0.0240 OVERRIDE thr 0.251       | bank    -- (backbone off)
+[tube]   seg3    g2->g3    slope +16.2 d-0.0332 thr 0.242       | bank    -- (backbone off)
+[tube]   seg4    g3->g4    slope  +1.9 d-0.0039 thr 0.271       | bank    -- (backbone off)
+[tube]   seg5    g4->FINIS slope  +1.5 d-0.0031 thr 0.272       | bank    -- (backbone off)
+[sched] waiting for heartbeat ...
+[sched] heartbeat sys 1
+[sched] ARM sent; waiting for GO ...
+[sched] GO.
+[tube] per-tick log -> C:\Users\nohab\Desktop\AI GP\AI-GrandPrix-\filt_auto_509.csv
+[tube] seg0 ag=0 thr=0.284 LADDER leg0 --0.0050 VERT trim=+0.0037 | [steer ] RAIL[lock] found=1 rms=0.36px rows=82 sep=0.442 u=+0.002 vconv=-0.365 | GATE u=+0.016 v=-0.023 sz=0.086 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-17.8 |a|=1.00g dimu=218 loop=0Hz det=0Hz
+[tube] seg0 ag=0 thr=0.285 LADDER leg0 --0.0050 VERT trim=+0.0045 | [steer ] RAIL[NO-LOCK] found=0 rms=21.33px rows=72 sep=0.364 u=+0.002 vconv=-0.122 | GATE u=+0.015 v=-0.033 sz=0.081 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-12.0 |a|=1.10g dimu=246 loop=0Hz det=0Hz
+[tube] seg0 ag=0 thr=0.281 LADDER leg0 --0.0050 VERT trim=+0.0013 | [steer ] RAIL[lock] found=1 rms=0.37px rows=62 sep=0.542 u=+0.003 vconv=-0.351 | GATE u=+0.021 v=-0.012 sz=0.083 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-6.6 |a|=1.07g dimu=277 loop=0Hz det=0Hz
+[tube] seg0 ag=0 thr=0.282 LADDER leg0 --0.0050 VERT trim=+0.0021 | [steer ] RAIL[lock] found=1 rms=0.44px rows=22 sep=0.732 u=+0.007 vconv=-0.342 | GATE u=+0.020 v=-0.019 sz=0.087 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-4.0 |a|=1.07g dimu=306 loop=0Hz det=0Hz
+[tube] seg0 ag=0 thr=0.282 LADDER leg0 --0.0050 VERT trim=+0.0018 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.007 vconv=+0.000 | GATE u=+0.014 v=-0.012 sz=0.092 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-3.4 |a|=1.07g dimu=336 loop=65Hz det=64Hz
+[tube] seg0 ag=0 thr=0.283 LADDER leg0 --0.0050 VERT trim=+0.0026 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.006 vconv=+0.000 | GATE u=+0.019 v=-0.018 sz=0.096 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-3.3 |a|=1.06g dimu=366 loop=65Hz det=64Hz
+[tube] seg0 ag=0 thr=0.277 LADDER leg0 --0.0050 VERT trim=-0.0032 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=6 sep=0.000 u=+0.003 vconv=+0.000 | GATE u=+0.019 v=+0.009 sz=0.087 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-3.8 |a|=1.02g dimu=395 loop=65Hz det=64Hz
+[tube] seg0 ag=0 thr=0.280 LADDER leg0 --0.0050 VERT trim=+0.0004 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.002 vconv=+0.000 | GATE u=+0.018 v=-0.012 sz=0.106 -> +0.0deg x1.00 | uLat=+0.000 desR=+0.0(ff+0.0+0.0) estR=+0.0 estP=-4.8 |a|=1.02g dimu=425 loop=65Hz det=64Hz
+[tube] seg0 ag=0 thr=0.281 LADDER leg0 --0.0050 VERT trim=+0.0011 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.001 vconv=+0.000 | GATE u=+0.018 v=+0.001 sz=0.116 -> -1.2deg x1.00 | uLat=-0.020 desR=-1.2(ff+0.0-1.2) estR=-0.4 estP=-5.9 |a|=1.05g dimu=455 loop=75Hz det=75Hz
+[tube] seg0 ag=0 thr=0.275 LADDER leg0 --0.0050 VERT trim=-0.0047 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.001 vconv=+0.000 | GATE u=+0.023 v=+0.070 sz=0.138 -> -1.1deg x1.00 | uLat=-0.020 desR=-1.1(ff+0.0-1.1) estR=-0.5 estP=-7.1 |a|=1.03g dimu=484 loop=75Hz det=75Hz
+[tube] seg0 ag=0 thr=0.258 LADDER leg0 --0.0050 VERT trim=-0.0223 | [steer ] RAIL[lock] found=1 rms=1.03px rows=20 sep=0.982 u=-0.102 vconv=-0.256 | GATE u=+0.025 v=+0.078 sz=0.146 -> -1.3deg x1.00 | uLat=-0.023 desR=-1.3(ff+0.0-1.3) estR=-0.6 estP=-8.5 |a|=0.91g dimu=514 loop=75Hz det=75Hz
+[tube] seg0 ag=0 thr=0.262 LADDER leg0 --0.0050 VERT trim=-0.0180 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=1 sep=0.000 u=-0.100 vconv=+0.000 | GATE u=+0.019 v=+0.070 sz=0.166 -> -1.2deg x1.00 | uLat=-0.021 desR=-1.2(ff+0.0-1.2) estR=-0.6 estP=-9.8 |a|=0.96g dimu=544 loop=75Hz det=75Hz
+[tube] seg0 ag=0 thr=0.270 LADDER leg0 --0.0050 VERT trim=-0.0103 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.086 vconv=+0.000 | GATE u=+0.016 v=+0.057 sz=0.186 -> -1.0deg x1.00 | uLat=-0.018 desR=-1.0(ff+0.0-1.0) estR=-0.6 estP=-10.7 |a|=1.00g dimu=574 loop=67Hz det=67Hz
+[tube] seg0 ag=0 thr=0.275 LADDER leg0 --0.0050 [VCOMMIT] VERT trim=-0.0048 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.052 vconv=+0.000 | GATE u=+0.012 v=+0.055 sz=0.217 -> -0.9deg x1.00 | uLat=-0.015 desR=-0.9(ff+0.0-0.9) estR=-0.4 estP=-11.7 |a|=1.03g dimu=602 loop=67Hz det=67Hz
+[tube] seg0 ag=0 thr=0.279 LADDER leg0 --0.0050 [VCOMMIT] VERT trim=-0.0014 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.031 vconv=+0.000 | GATE u=+0.001 v=+0.039 sz=0.259 -> -0.5deg x1.00 | uLat=-0.008 desR=-0.5(ff+0.0-0.5) estR=-0.3 estP=-12.2 |a|=1.06g dimu=634 loop=67Hz det=67Hz
+[tube] seg0 ag=0 thr=0.280 LADDER leg0 --0.0050 [VCOMMIT] VERT trim=-0.0004 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=18 sep=0.000 u=-0.018 vconv=+0.000 | GATE u=-0.021 v=+0.038 sz=0.334 -> +0.3deg x1.00 | uLat=+0.005 desR=+0.3(ff+0.0+0.3) estR=-0.1 estP=-12.8 |a|=1.06g dimu=665 loop=67Hz det=67Hz
+[tube] >>> seg -> 1 (TIME fallback) t=4.1s
+[tube] seg1/bank0 ag=0 thr=0.280 LADDER leg0 --0.0050 [VCOMMIT] VERT trim=-0.0001 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=19 sep=0.000 u=-0.011 vconv=+0.000 | GATE u=-0.063 v=+0.078 sz=0.508 -> +1.8deg x1.00 | uLat=+0.031 desR=+1.8(ff+0.0+1.8) estR=+0.3 estP=-13.3 |a|=1.05g dimu=697 loop=47Hz det=47Hz
+[tube] seg1/bank0 ag=0 thr=0.280 LADDER leg0 --0.0050 [VCOMMIT] VERT trim=-0.0000 | [steer ] RAIL[NO-LOCK] found=0 rms=9.19px rows=34 sep=0.156 u=-0.064 vconv=+0.356 | GATE -- | uLat=+0.046 desR=+2.6(ff+0.0+2.6) estR=+1.1 estP=-13.8 |a|=1.06g dimu=724 loop=47Hz det=47Hz
+[tube] seg1/bank0 ag=0 thr=0.280 LADDER leg0 --0.0050 [VCOMMIT] VERT trim=-0.0000 | [steer ] RAIL[NO-LOCK] found=0 rms=9.61px rows=19 sep=0.126 u=-0.136 vconv=+0.565 | GATE u=+0.044 v=+0.490 sz=0.095 -> -7.2deg x1.00 | uLat=-0.126 desR=-7.2(ff+0.0-7.2) estR=+1.3 estP=-14.4 |a|=1.06g dimu=756 loop=47Hz det=47Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=1 sep=0.000 u=-0.136 vconv=+0.000 | GATE u=+0.045 v=+0.545 sz=0.107 -> +0.1deg x1.00 | uLat=-0.066 desR=+5.1(ff+5.0+0.1) estR=+1.1 estP=-14.8 |a|=0.58g dimu=786 loop=47Hz det=47Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=4 sep=0.000 u=-0.101 vconv=+0.000 | GATE u=+0.040 v=+0.584 sz=0.114 -> -0.2deg x1.00 | uLat=-0.049 desR=+4.8(ff+5.0-0.2) estR=+3.1 estP=-14.8 |a|=0.82g dimu=816 loop=55Hz det=55Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=5 sep=0.000 u=-0.061 vconv=+0.000 | GATE u=+0.036 v=+0.639 sz=0.131 -> -0.4deg x1.00 | uLat=-0.042 desR=+4.6(ff+5.0-0.4) estR=+4.0 estP=-14.8 |a|=0.81g dimu=846 loop=55Hz det=55Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=3 sep=0.000 u=-0.036 vconv=+0.000 | GATE u=+0.032 v=+0.689 sz=0.148 -> -0.4deg x1.00 | uLat=-0.036 desR=+4.6(ff+5.0-0.4) estR=+4.2 estP=-15.0 |a|=0.83g dimu=876 loop=55Hz det=55Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.022 vconv=+0.000 | GATE u=+0.029 v=+0.732 sz=0.162 -> -0.4deg x1.00 | uLat=-0.032 desR=+4.6(ff+5.0-0.4) estR=+4.2 estP=-15.2 |a|=0.82g dimu=905 loop=55Hz det=55Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=6 sep=0.000 u=-0.013 vconv=+0.000 | GATE u=+0.023 v=+0.753 sz=0.174 -> -0.4deg x1.00 | uLat=-0.028 desR=+4.6(ff+5.0-0.4) estR=+4.1 estP=-15.6 |a|=0.84g dimu=935 loop=73Hz det=73Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.008 vconv=+0.000 | GATE u=+0.022 v=+0.748 sz=0.188 -> -1.3deg x1.00 | uLat=-0.023 desR=+3.7(ff+5.0-1.3) estR=+3.4 estP=-16.4 |a|=0.85g dimu=964 loop=73Hz det=73Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.005 vconv=+0.000 | GATE u=+0.022 v=+0.715 sz=0.208 -> -1.3deg x1.00 | uLat=-0.022 desR=+3.7(ff+5.0-1.3) estR=+2.6 estP=-17.7 |a|=0.84g dimu=994 loop=73Hz det=73Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.003 vconv=+0.000 | GATE u=+0.022 v=+0.665 sz=0.259 -> -1.2deg x1.00 | uLat=-0.022 desR=+3.8(ff+5.0-1.2) estR=+2.2 estP=-18.7 |a|=0.88g dimu=1025 loop=73Hz det=73Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[lock-REJ] found=1 rms=3.22px rows=27 sep=0.070 u=+0.005 vconv=+0.667 | GATE u=+0.038 v=+0.553 sz=0.361 -> -1.6deg x1.00 | uLat=-0.028 desR=+3.4(ff+5.0-1.6) estR=+2.0 estP=-19.2 |a|=0.89g dimu=1057 loop=61Hz det=61Hz
+[tube] seg1 ag=1 thr=0.221 LADDER leg1 -0.0390 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=11 sep=0.000 u=+0.007 vconv=+0.000 | GATE u=+0.110 v=+0.276 sz=0.584 -> -3.9deg x1.00 | uLat=-0.068 desR=+0.3(ff+5.0-3.9) estR=+1.5 estP=-19.4 |a|=0.91g dimu=1094 loop=61Hz det=61Hz
+[tube] seg1 ag=1 thr=0.235 LADDER leg1 -0.0390 VERT trim=-0.0010 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=7 sep=0.000 u=+0.007 vconv=+0.000 | GATE u=-0.124 v=+0.550 sz=0.064 -> +9.8deg x1.00 | uLat=+0.172 desR=+0.3(ff+5.0+9.8) estR=+0.2 estP=-19.4 |a|=0.94g dimu=1123 loop=61Hz det=61Hz
+[tube] >>> seg -> 2 (active_gate) t=8.0s
+[tube] seg2 ag=2 thr=0.268 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.22px rows=20 sep=-0.030 u=-0.003 vconv=+0.631 | GATE u=-0.118 v=+0.523 sz=0.071 -> -0.5deg x1.00 | uLat=+0.135 desR=-5.0(ff-4.5-0.5) estR=-0.5 estP=-19.4 |a|=0.98g dimu=1153 loop=40Hz det=40Hz
+[tube] seg2 ag=2 thr=0.332 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.50px rows=28 sep=-0.037 u=-0.003 vconv=+0.744 | GATE u=-0.116 v=+0.495 sz=0.076 -> -0.3deg x1.00 | uLat=+0.124 desR=-4.8(ff-4.5-0.3) estR=-2.9 estP=-19.1 |a|=1.54g dimu=1182 loop=40Hz det=40Hz
+[tube] seg2 ag=2 thr=0.313 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[lock-REJ] found=1 rms=2.43px rows=68 sep=0.053 u=-0.034 vconv=-0.400 | GATE u=-0.121 v=+0.506 sz=0.069 -> -0.2deg x1.00 | uLat=+0.119 desR=-4.7(ff-4.5-0.2) estR=-3.9 estP=-19.1 |a|=1.34g dimu=1213 loop=40Hz det=40Hz
+[tube] seg2 ag=2 thr=0.293 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=6.79px rows=54 sep=0.063 u=-0.048 vconv=-0.389 | GATE u=-0.091 v=+0.447 sz=0.087 -> -0.1deg x1.00 | uLat=+0.096 desR=-4.6(ff-4.5-0.1) estR=-4.2 estP=-19.0 |a|=1.11g dimu=1244 loop=40Hz det=40Hz
+[tube] seg2 ag=2 thr=0.273 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[lock-REJ] found=1 rms=0.68px rows=33 sep=0.081 u=-0.051 vconv=-0.400 | GATE u=-0.090 v=+0.456 sz=0.102 -> -0.1deg x1.00 | uLat=+0.094 desR=-4.6(ff-4.5-0.1) estR=-3.2 estP=-17.9 |a|=1.07g dimu=1273 loop=66Hz det=66Hz
+[tube] seg2 ag=2 thr=0.254 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=7 sep=0.000 u=-0.059 vconv=+0.000 | GATE u=-0.082 v=+0.485 sz=0.118 -> -0.0deg x1.00 | uLat=+0.087 desR=-4.5(ff-4.5-0.0) estR=-2.8 estP=-17.7 |a|=0.97g dimu=1304 loop=66Hz det=66Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=8 sep=0.000 u=-0.053 vconv=+0.000 | GATE u=-0.092 v=+0.498 sz=0.142 -> +0.0deg x1.00 | uLat=+0.090 desR=-4.5(ff-4.5+0.0) estR=-2.7 estP=-18.5 |a|=0.92g dimu=1333 loop=66Hz det=66Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=12 sep=0.000 u=-0.032 vconv=+0.000 | GATE u=-0.086 v=+0.512 sz=0.166 -> +0.0deg x1.00 | uLat=+0.089 desR=-4.5(ff-4.5+0.0) estR=-2.7 estP=-19.0 |a|=0.92g dimu=1362 loop=66Hz det=66Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [steer ] RAIL[NO-LOCK] found=0 rms=0.00px rows=12 sep=0.000 u=-0.019 vconv=+0.000 | GATE u=-0.068 v=+0.505 sz=0.192 -> +0.0deg x1.00 | uLat=+0.082 desR=-4.5(ff-4.5+0.0) estR=-2.7 estP=-19.2 |a|=0.93g dimu=1394 loop=64Hz det=64Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=5 sep=0.000 u=-0.011 vconv=+0.000 | GATE u=-0.060 v=+0.505 sz=0.241 -> +0.0deg x0.60 | uLat=+0.069 desR=-2.7(ff-4.5+0.0) estR=-2.5 estP=-19.3 |a|=0.93g dimu=1425 loop=64Hz det=64Hz
+[tube] seg2 ag=2 thr=0.221 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=6 sep=0.000 u=-0.006 vconv=+0.000 | GATE u=-0.054 v=+0.468 sz=0.297 -> +0.0deg x0.17 | uLat=+0.060 desR=-0.8(ff-4.5+0.0) estR=-1.3 estP=-19.3 |a|=0.83g dimu=1457 loop=64Hz det=64Hz
+[tube] seg2 ag=2 thr=0.221 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=9 sep=0.000 u=-0.004 vconv=+0.000 | GATE u=-0.050 v=+0.369 sz=0.402 -> +0.0deg x0.05 | uLat=+0.054 desR=-0.2(ff-4.5+0.0) estR=-0.6 estP=-19.5 |a|=0.87g dimu=1487 loop=64Hz det=64Hz
+[tube] seg2 ag=2 thr=0.230 LADDER leg2 -0.0240 VERT trim=-0.0057 | [COMMIT] RAIL[NO-LOCK] found=0 rms=28.80px rows=33 sep=0.151 u=-0.005 vconv=+0.604 | GATE -- | uLat=+0.051 desR=-0.1(ff-4.5+0.0) estR=-0.1 estP=-19.8 |a|=0.89g dimu=1515 loop=45Hz det=45Hz
+[tube] seg2 ag=2 thr=0.230 LADDER leg2 -0.0240 VERT trim=-0.0057 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=2 sep=0.000 u=-0.005 vconv=+0.000 | GATE -- | uLat=+0.051 desR=-0.0(ff-4.5+0.0) estR=-0.0 estP=-19.6 |a|=0.93g dimu=1546 loop=45Hz det=45Hz
+[tube] seg2 ag=2 thr=0.229 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=12 sep=0.000 u=-0.003 vconv=+0.000 | GATE u=+0.171 v=+0.499 sz=0.050 -> -2.6deg x0.00 | uLat=-0.046 desR=-0.0(ff-4.0-0.0) estR=+0.0 estP=-19.1 |a|=0.81g dimu=1575 loop=45Hz det=45Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=-0.002 vconv=+0.000 | GATE u=+0.173 v=+0.462 sz=0.053 -> -4.4deg x0.00 | uLat=-0.134 desR=-0.0(ff-4.2-0.0) estR=+0.1 estP=-18.9 |a|=0.97g dimu=1604 loop=45Hz det=45Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=4 sep=0.000 u=-0.001 vconv=+0.000 | GATE u=+0.178 v=+0.434 sz=0.058 -> -1.9deg x0.00 | uLat=-0.164 desR=-0.0(ff-4.4-0.0) estR=+0.1 estP=-18.6 |a|=0.97g dimu=1634 loop=65Hz det=65Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=2 sep=0.000 u=-0.001 vconv=+0.000 | GATE u=+0.184 v=+0.403 sz=0.061 -> -1.1deg x0.00 | uLat=-0.177 desR=-0.0(ff-4.4-0.0) estR=+0.1 estP=-18.5 |a|=0.98g dimu=1664 loop=65Hz det=65Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=4 sep=0.000 u=-0.000 vconv=+0.000 | GATE u=+0.181 v=+0.361 sz=0.060 -> -1.1deg x0.00 | uLat=-0.181 desR=-0.0(ff-4.5-0.0) estR=+0.2 estP=-18.3 |a|=0.98g dimu=1694 loop=65Hz det=65Hz
+[tube] seg2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=1 sep=0.000 u=-0.000 vconv=+0.000 | GATE u=+0.183 v=+0.317 sz=0.065 -> -1.1deg x0.00 | uLat=-0.180 desR=-0.0(ff-4.5-0.0) estR=+0.2 estP=-18.3 |a|=0.98g dimu=1723 loop=65Hz det=65Hz
+[tube] >>> seg -> 3 (TIME fallback) t=13.1s
+[tube] seg3/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=1 sep=0.000 u=-0.000 vconv=+0.000 | GATE u=+0.193 v=+0.250 sz=0.078 -> -1.8deg x0.00 | uLat=-0.188 desR=-0.0(ff-4.5-0.0) estR=+0.2 estP=-18.2 |a|=0.98g dimu=1753 loop=79Hz det=79Hz
+[tube] seg3/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.192 v=+0.194 sz=0.084 -> -2.5deg x0.00 | uLat=-0.191 desR=-0.0(ff-4.5-0.0) estR=+0.3 estP=-18.2 |a|=0.98g dimu=1782 loop=79Hz det=79Hz
+[tube] seg3/bank2 ag=2 thr=0.248 LADDER leg2 -0.0240 VERT trim=-0.0026 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=1 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.184 v=+0.117 sz=0.087 -> -3.1deg x0.00 | uLat=-0.190 desR=-0.0(ff-4.5-0.0) estR=+0.4 estP=-18.0 |a|=1.03g dimu=1812 loop=79Hz det=79Hz
+[tube] seg3/bank2 ag=2 thr=0.262 LADDER leg2 -0.0240 VERT trim=+0.0106 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.175 v=+0.039 sz=0.090 -> -3.3deg x0.00 | uLat=-0.180 desR=-0.0(ff-4.5-0.0) estR=+0.5 estP=-17.4 |a|=1.09g dimu=1841 loop=79Hz det=79Hz
+[tube] seg3/bank2 ag=2 thr=0.284 LADDER leg2 -0.0240 VERT trim=+0.0325 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.169 v=-0.071 sz=0.108 -> -4.4deg x0.00 | uLat=-0.175 desR=-0.0(ff-4.5-0.0) estR=+0.5 estP=-16.9 |a|=1.16g dimu=1872 loop=77Hz det=77Hz
+[tube] seg3/bank2 ag=2 thr=0.303 LADDER leg2 -0.0240 VERT trim=+0.0517 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.153 v=-0.168 sz=0.116 -> -5.3deg x0.00 | uLat=-0.164 desR=-0.0(ff-4.5-0.0) estR=+0.2 estP=-16.9 |a|=1.29g dimu=1901 loop=77Hz det=77Hz
+[tube] seg3/bank2 ag=2 thr=0.329 LADDER leg2 -0.0240 VERT trim=+0.0775 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.127 v=-0.313 sz=0.116 -> -5.4deg x0.00 | uLat=-0.145 desR=-0.0(ff-4.5-0.0) estR=+0.1 estP=-16.9 |a|=1.40g dimu=1930 loop=77Hz det=77Hz
+[coast] !!! COLLISION ENV/ground at t=14.8s (ag=2)
+[tube] seg3/bank2 ag=2 thr=0.330 LADDER leg2 -0.0240 VERT trim=+0.0793 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=-0.144 desR=-0.0(ff-4.5-0.0) estR=-0.7 estP=-20.6 |a|=1.38g dimu=1959 loop=77Hz det=77Hz
+[tube] seg3/bank2 ag=2 thr=0.321 LADDER leg2 -0.0240 VERT trim=+0.0699 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.187 v=-0.228 sz=0.100 -> -4.4deg x0.00 | uLat=-0.164 desR=-0.0(ff-4.5-0.0) estR=-0.4 estP=-20.3 |a|=1.18g dimu=1989 loop=84Hz det=84Hz
+[tube] seg3/bank2 ag=2 thr=0.276 LADDER leg2 -0.0240 VERT trim=+0.0250 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.172 v=-0.150 sz=0.117 -> -5.4deg x0.00 | uLat=-0.174 desR=-0.0(ff-4.5-0.0) estR=+0.1 estP=-13.5 |a|=0.98g dimu=2019 loop=84Hz det=84Hz
+[tube] seg3/bank2 ag=2 thr=0.259 LADDER leg2 -0.0240 VERT trim=+0.0082 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=6 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.149 v=-0.104 sz=0.123 -> -6.1deg x0.00 | uLat=-0.163 desR=-0.0(ff-4.5-0.0) estR=+0.2 estP=-7.6 |a|=0.91g dimu=2049 loop=84Hz det=84Hz
+[tube] seg3/bank2 ag=2 thr=0.245 LADDER leg2 -0.0240 VERT trim=-0.0059 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=12 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.104 v=-0.039 sz=0.134 -> -5.7deg x0.00 | uLat=-0.137 desR=-0.0(ff-4.5-0.0) estR=+0.4 estP=-4.7 |a|=0.86g dimu=2078 loop=84Hz det=84Hz
+[tube] seg3/bank2 ag=2 thr=0.246 LADDER leg2 -0.0240 VERT trim=-0.0053 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.079 v=-0.041 sz=0.139 -> -4.9deg x0.00 | uLat=-0.102 desR=-0.0(ff-4.5-0.0) estR=+0.5 estP=-4.0 |a|=0.87g dimu=2109 loop=75Hz det=75Hz
+[tube] seg3/bank2 ag=2 thr=0.255 LADDER leg2 -0.0240 VERT trim=+0.0035 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.049 v=-0.057 sz=0.137 -> -3.6deg x0.00 | uLat=-0.073 desR=-0.0(ff-4.5-0.0) estR=+0.6 estP=-2.8 |a|=0.92g dimu=2138 loop=75Hz det=75Hz
+[tube] seg3/bank2 ag=2 thr=0.264 LADDER leg2 -0.0240 VERT trim=+0.0134 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=11 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=+0.014 v=-0.079 sz=0.136 -> -2.0deg x0.00 | uLat=-0.040 desR=-0.0(ff-4.5-0.0) estR=+0.8 estP=-2.5 |a|=0.98g dimu=2167 loop=75Hz det=75Hz
+[tube] seg3/bank2 ag=2 thr=0.271 LADDER leg2 -0.0240 VERT trim=+0.0204 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=8 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.038 v=-0.111 sz=0.137 -> -0.1deg x0.00 | uLat=-0.003 desR=-0.0(ff-4.5-0.0) estR=+0.9 estP=-2.5 |a|=1.01g dimu=2196 loop=75Hz det=75Hz
+[tube] seg3/bank2 ag=2 thr=0.282 LADDER leg2 -0.0240 VERT trim=+0.0306 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.103 v=-0.145 sz=0.142 -> +0.0deg x0.00 | uLat=+0.055 desR=-0.0(ff-4.5+0.0) estR=+1.1 estP=-2.9 |a|=1.08g dimu=2225 loop=71Hz det=71Hz
+[tube] seg3/bank2 ag=2 thr=0.290 LADDER leg2 -0.0240 VERT trim=+0.0394 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.188 v=-0.188 sz=0.143 -> +0.0deg x0.00 | uLat=+0.128 desR=-0.0(ff-4.5+0.0) estR=+1.2 estP=-3.2 |a|=1.13g dimu=2256 loop=71Hz det=71Hz
+[tube] seg3/bank2 ag=2 thr=0.294 LADDER leg2 -0.0240 VERT trim=+0.0426 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=16 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.293 v=-0.205 sz=0.160 -> +0.0deg x0.00 | uLat=+0.219 desR=-0.0(ff-4.5+0.0) estR=+1.2 estP=-3.7 |a|=1.17g dimu=2286 loop=71Hz det=71Hz
+[tube] seg3/bank2 ag=2 thr=0.288 LADDER leg2 -0.0240 VERT trim=+0.0371 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=17 sep=0.000 u=+0.319 vconv=+0.000 | GATE u=-0.442 v=-0.188 sz=0.191 -> +0.0deg x0.00 | uLat=+0.331 desR=-0.0(ff-4.5+0.0) estR=+1.6 estP=-4.5 |a|=1.10g dimu=2316 loop=71Hz det=71Hz
+[tube] seg3/bank2 ag=2 thr=0.266 LADDER leg2 -0.0240 VERT trim=+0.0146 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=1 sep=0.000 u=+0.319 vconv=+0.000 | GATE u=-0.682 v=-0.112 sz=0.251 -> +0.0deg x0.00 | uLat=+0.508 desR=-0.0(ff-4.5+0.0) estR=+2.0 estP=-5.5 |a|=0.94g dimu=2345 loop=66Hz det=66Hz
+[tube] seg3/bank2 ag=2 thr=0.246 LADDER leg2 -0.0240 VERT trim=-0.0046 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=4 sep=0.000 u=+0.243 vconv=+0.000 | GATE u=-0.870 v=-0.053 sz=0.229 -> +0.0deg x0.00 | uLat=+0.727 desR=-0.0(ff-4.5+0.0) estR=+2.3 estP=-6.8 |a|=0.85g dimu=2377 loop=66Hz det=66Hz
+[tube] seg3/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=5 sep=0.000 u=+0.144 vconv=+0.000 | GATE u=-0.382 v=+0.218 sz=0.051 -> +0.0deg x0.00 | uLat=+0.565 desR=-0.0(ff-4.5+0.0) estR=+1.3 estP=-7.0 |a|=0.83g dimu=2406 loop=66Hz det=66Hz
+[tube] seg3/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=3 sep=0.000 u=+0.086 vconv=+0.000 | GATE u=-0.447 v=+0.260 sz=0.060 -> +0.0deg x0.00 | uLat=+0.467 desR=-0.0(ff-4.5+0.0) estR=+1.3 estP=-7.5 |a|=0.86g dimu=2436 loop=66Hz det=66Hz
+[coast] !!! COLLISION ENV/ground at t=19.3s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.3s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.3s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.3s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[tube] seg3/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=3 sep=0.000 u=+0.052 vconv=+0.000 | GATE u=-0.515 v=+0.443 sz=0.077 -> +0.0deg x0.00 | uLat=+0.483 desR=-0.0(ff-4.5+0.0) estR=+6.6 estP=-14.1 |a|=0.64g dimu=2465 loop=66Hz det=66Hz[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.4s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.6s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[tube] seg3/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=2 sep=0.000 u=+0.031 vconv=+0.000 | GATE u=-0.630 v=+0.562 sz=0.093 -> +0.0deg x0.00 | uLat=+0.560 desR=-0.0(ff-4.5+0.0) estR=+6.1 estP=-15.4 |a|=0.99g dimu=2495 loop=66Hz det=66Hz
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.7s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.8s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[tube] seg3/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.019 vconv=+0.000 | GATE u=-0.767 v=+0.708 sz=0.103 -> +0.0deg x0.00 | uLat=+0.672 desR=-0.0(ff-4.5+0.0) estR=+6.1 estP=-15.0 |a|=1.01g dimu=2524 loop=66Hz det=66Hz
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=19.9s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[tube] >>> seg -> 4 (TIME fallback) t=20.0s
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.0s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.1s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[tube] seg4/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.011 vconv=+0.000 | GATE u=-0.916 v=+0.880 sz=0.097 -> +0.0deg x0.00 | uLat=+0.805 desR=-0.0(ff-4.5+0.0) estR=+6.8 estP=-15.2 |a|=1.02g dimu=2554 loop=81Hz det=81Hz
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.2s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.3s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.3s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.3s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=20.3s (ag=2)
+[tube] seg4/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.007 vconv=+0.000 | GATE u=-0.406 v=+0.641 sz=0.047 -> +0.0deg x0.00 | uLat=+0.741 desR=-0.0(ff-4.5+0.0) estR=+3.6 estP=-14.2 |a|=0.79g dimu=2583 loop=81Hz det=81Hz
+[tube] seg4/bank2 ag=2 thr=0.236 LADDER leg2 -0.0240 VERT trim=-0.0150 | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.453 v=+0.686 sz=0.046 -> +0.0deg x0.00 | uLat=+0.524 desR=-0.0(ff-4.5+0.0) estR=+1.9 estP=-13.5 |a|=0.82g dimu=2612 loop=81Hz det=81Hz
+[tube] seg4/bank2 ag=2 thr=0.238 LADDER leg2 -0.0240 VERT trim=-0.0132(coasting 0.2s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.515 v=+0.743 sz=0.046 -> +0.0deg x0.00 | uLat=+0.000 desR=-0.0(ff-4.5+0.0) estR=+0.7 estP=-13.3 |a|=0.83g dimu=2642 loop=81Hz det=81Hz
+[tube] seg4/bank2 ag=2 thr=0.240 LADDER leg2 -0.0240 VERT trim=-0.0112(coasting 0.4s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.580 v=+0.792 sz=0.045 -> +0.0deg x0.00 | uLat=+0.000 desR=-0.0(ff-4.5+0.0) estR=+2.9 estP=-12.5 |a|=0.86g dimu=2671 loop=89Hz det=89Hz
+[coast] !!! COLLISION ENV/ground at t=21.5s (ag=2)
+[tube] seg4/bank2 ag=2 thr=0.242 LADDER leg2 -0.0240 VERT trim=-0.0095(coasting 0.7s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE u=-0.665 v=+0.906 sz=0.044 -> +0.0deg x0.00 | uLat=+0.000 desR=-0.0(ff-4.5+0.0) estR=+7.1 estP=-10.9 |a|=0.86g dimu=2700 loop=89Hz det=89Hz
+[coast] !!! COLLISION ENV/ground at t=21.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=21.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=21.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=21.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=21.5s (ag=2)
+[coast] !!! COLLISION ENV/ground at t=21.5s (ag=2)
+[tube] seg4/bank2 ag=2 thr=0.243 LADDER leg2 -0.0240 VERT trim=-0.0080(coasting 0.9s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-4.5+0.0) estR=+8.4 estP=-16.7 |a|=0.64g dimu=2729 loop=89Hz det=89Hz
+[tube] seg4/bank2 ag=2 thr=0.244 LADDER leg2 -0.0240 VERT trim=-0.0067(coasting 1.2s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-3.5+0.0) estR=+5.0 estP=-14.7 |a|=0.84g dimu=2759 loop=89Hz det=89Hz
+[tube] seg4/bank2 ag=2 thr=0.245 LADDER leg2 -0.0240 VERT trim=-0.0057(coasting 1.5s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-1.9+0.0) estR=+2.4 estP=-14.1 |a|=0.83g dimu=2788 loop=99Hz det=99Hz
+[tube] seg4/bank2 ag=2 thr=0.246 LADDER leg2 -0.0240 VERT trim=-0.0048(coasting 1.7s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-1.0+0.0) estR=+6.8 estP=-11.9 |a|=0.85g dimu=2817 loop=99Hz det=99Hz
+[tube] seg4/bank2 ag=2 thr=0.247 LADDER leg2 -0.0240 VERT trim=-0.0040(coasting 2.0s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.5+0.0) estR=+5.5 estP=-10.9 |a|=0.83g dimu=2846 loop=99Hz det=99Hz
+[tube] seg4/bank2 ag=2 thr=0.248 LADDER leg2 -0.0240 VERT trim=-0.0034(coasting 2.2s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.3+0.0) estR=+2.8 estP=-10.7 |a|=0.83g dimu=2875 loop=99Hz det=99Hz
+[tube] seg4/bank2 ag=2 thr=0.248 LADDER leg2 -0.0240 VERT trim=-0.0029(coasting 2.5s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.2+0.0) estR=+2.4 estP=-10.5 |a|=0.84g dimu=2905 loop=100Hz det=100Hz
+[tube] seg4/bank2 ag=2 thr=0.249 LADDER leg2 -0.0240 VERT trim=-0.0024(coasting 2.7s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.1+0.0) estR=+3.5 estP=-10.1 |a|=0.85g dimu=2934 loop=100Hz det=100Hz
+[tube] seg4/bank2 ag=2 thr=0.249 LADDER leg2 -0.0240 VERT trim=-0.0021(coasting 3.0s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+4.0 estP=-9.8 |a|=0.84g dimu=2964 loop=100Hz det=100Hz
+[tube] seg4/bank2 ag=2 thr=0.249 LADDER leg2 -0.0240 VERT trim=-0.0017(coasting 3.2s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+3.9 estP=-9.7 |a|=0.83g dimu=2993 loop=100Hz det=100Hz
+[tube] >>> seg -> 5 (TIME fallback) t=24.2s
+[tube] seg5/bank2 ag=2 thr=0.250 LADDER leg2 -0.0240 VERT trim=-0.0015(coasting 3.5s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.9 estP=-9.7 |a|=0.82g dimu=3022 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.250 LADDER leg2 -0.0240 VERT trim=-0.0012(coasting 3.7s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+4.1 estP=-9.5 |a|=0.83g dimu=3052 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.250 LADDER leg2 -0.0240 VERT trim=-0.0010(coasting 4.0s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+5.6 estP=-9.3 |a|=0.79g dimu=3082 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.250 LADDER leg2 -0.0240 VERT trim=-0.0009(coasting 4.3s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+3.4 estP=-9.3 |a|=0.76g dimu=3111 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.250 LADDER leg2 -0.0240 VERT trim=-0.0007(coasting 4.5s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.8 estP=-9.2 |a|=0.76g dimu=3140 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.250 LADDER leg2 -0.0240 VERT trim=-0.0006(coasting 4.8s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.3 estP=-9.2 |a|=0.78g dimu=3170 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.250 LADDER leg2 -0.0240 VERT trim=-0.0005(coasting 5.0s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+0.5 estP=-9.2 |a|=0.84g dimu=3199 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0004(coasting 5.3s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+4.5 estP=-9.3 |a|=0.82g dimu=3229 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0004(coasting 5.5s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.2 estP=-9.2 |a|=0.82g dimu=3259 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0003(coasting 5.8s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.0 estP=-9.2 |a|=0.83g dimu=3288 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0003(coasting 6.0s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.8 estP=-9.3 |a|=0.81g dimu=3317 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0002(coasting 6.3s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+3.4 estP=-9.4 |a|=0.81g dimu=3346 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0002(coasting 6.5s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.2 estP=-9.4 |a|=0.81g dimu=3376 loop=101Hz det=101Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0002(coasting 6.8s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.0 estP=-9.4 |a|=0.82g dimu=3405 loop=101Hz det=101Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0001(coasting 7.0s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+3.5 estP=-9.6 |a|=0.81g dimu=3435 loop=101Hz det=101Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0001(coasting 7.3s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.3 estP=-9.6 |a|=0.79g dimu=3464 loop=101Hz det=101Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0001(coasting 7.6s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.0 estP=-9.6 |a|=0.78g dimu=3493 loop=103Hz det=103Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0001(coasting 7.8s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.9 estP=-9.8 |a|=0.83g dimu=3523 loop=103Hz det=103Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0001(coasting 8.1s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.9 estP=-10.0 |a|=0.80g dimu=3552 loop=103Hz det=103Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0001(coasting 8.3s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+3.1 estP=-10.1 |a|=0.80g dimu=3582 loop=103Hz det=103Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 8.6s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.5 estP=-10.2 |a|=0.90g dimu=3611 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 8.8s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.8 estP=-10.3 |a|=0.82g dimu=3640 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 9.1s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.4 estP=-10.5 |a|=0.83g dimu=3669 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 9.3s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+5.4 estP=-11.1 |a|=0.84g dimu=3698 loop=100Hz det=100Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 9.6s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+4.2 estP=-11.3 |a|=0.76g dimu=3728 loop=105Hz det=105Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 9.8s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+1.9 estP=-11.2 |a|=0.80g dimu=3758 loop=105Hz det=105Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 10.1s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.4 estP=-11.5 |a|=0.83g dimu=3787 loop=105Hz det=105Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 10.4s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+2.9 estP=-12.0 |a|=0.84g dimu=3817 loop=105Hz det=105Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 10.6s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+6.3 estP=-13.1 |a|=0.85g dimu=3845 loop=102Hz det=102Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 10.9s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+3.0 estP=-13.1 |a|=0.82g dimu=3875 loop=102Hz det=102Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 11.1s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+3.8 estP=-13.7 |a|=0.83g dimu=3904 loop=102Hz det=102Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 11.4s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+6.6 estP=-15.5 |a|=0.83g dimu=3934 loop=102Hz det=102Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 11.6s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+14.3 estP=-20.9 |a|=0.87g dimu=3963 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 11.9s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+29.2 estP=-35.6 |a|=0.93g dimu=3992 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 12.1s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+52.9 estP=-59.9 |a|=0.97g dimu=4022 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 12.4s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+97.4 estP=-95.5 |a|=1.00g dimu=4052 loop=99Hz det=99Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 12.7s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+135.8 estP=-129.0 |a|=0.99g dimu=4082 loop=95Hz det=95Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 12.9s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+151.9 estP=-148.7 |a|=0.95g dimu=4111 loop=95Hz det=95Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 13.2s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+161.7 estP=-160.0 |a|=0.90g dimu=4141 loop=95Hz det=95Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 13.4s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=+171.6 estP=-165.8 |a|=0.86g dimu=4170 loop=95Hz det=95Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 13.7s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=-173.8 estP=-169.1 |a|=0.92g dimu=4200 loop=97Hz det=97Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 13.9s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=-158.6 estP=-172.0 |a|=0.98g dimu=4230 loop=97Hz det=97Hz
+[tube] seg5/bank2 ag=2 thr=0.251 LADDER leg2 -0.0240 VERT trim=-0.0000(coasting 14.2s) | [COMMIT] RAIL[NO-LOCK] found=0 rms=0.00px rows=0 sep=0.000 u=+0.000 vconv=+0.000 | GATE -- | uLat=+0.000 desR=-0.0(ff-0.0+0.0) estR=-158.3 estP=-174.4 |a|=1.06g dimu=4260 loop=97Hz det=97Hz
+[tube] max flight 35.0s -- stop. seg=5 ag=2
+[sched] throttle-0 + DISARM sent.
+[tube] final active_gate=2  gates passed=2/6

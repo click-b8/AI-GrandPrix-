@@ -123,6 +123,13 @@ CRUISE_PITCH_TOL_DEG = 5.0
 # our right-positive vision meets the sim's left-positive roll.
 LATERAL_SIGN = -1.0
 
+# --- PROBE INSTRUMENTATION (branch gate3-pnp-probe, TEMPORARY) -----------------
+# Set VQ1_PROBE_FRAME_SHAPE=1 to have GateDetector.detect() print the shape it is
+# actually handed, ONCE per process. Default off => the live path is unchanged.
+# Delete this and its use in detect() when the branch is dropped.
+_PROBE_FRAME_SHAPE = bool(os.environ.get("VQ1_PROBE_FRAME_SHAPE"))
+_PROBE_SHAPE_LOGGED = False
+
 
 # ===========================================================================
 # ============================  CALIBRATE ME  ===============================
@@ -199,6 +206,51 @@ class ServoConfig:
     tube_lower_band: tuple = (0.60, 0.85)  # frac of H: nearest/widest -> most stable u
     tube_upper_band: tuple = (0.35, 0.55)  # frac of H: curvature reference (bend ahead)
     tube_min_band_frac: float = 0.004      # min masked frac of a band to trust its centre
+
+    # ---- RAIL extraction (the course path is two cyan LINES, not a fill) ----------
+    # The old mask+area approach asked "how much cyan is there", which is the wrong
+    # question for a THIN BRIGHT CURVE: a perfectly visible rail one pixel wide has
+    # essentially zero area, so area_frac read ~0 and the tube was declared unseen.
+    # That is the <4%-lock false negative. area_frac is still REPORTED (it is a useful
+    # log column) but it never gates anything.
+    #
+    # THRESHOLD, measured on vision_frame.png. The rails are high-B, high-G, low-R, so
+    # the discriminant is the chroma difference min(G,B) - R, which is ~0 on every grey
+    # /white structure in the scene (buildings, the horizon grid) whatever its
+    # brightness, and large only on saturated cyan. Measured over the whole frame that
+    # score has p50 0, p90 45, p99 95; the rails sit at 100-255. 60 is above the
+    # background's 90th percentile and below the rails, and holds 201 of 210 scanned
+    # rows. A brightness floor is applied as well so dim cyan haze cannot masquerade
+    # as a rail edge.
+    rail_score_min: float = 60.0        # min(G,B) - R on the rails; grey scenery ~0
+    rail_val_min: float = 90.0          # 0-255 floor on max(G,B): rails are bright
+    rail_min_run_px: int = 2            # ignore 1-px speckle when picking a row's runs
+    rail_merge_gap_px: int = 6          # runs closer than this are one feature
+    rail_band: tuple = (0.30, 1.00)     # frac of H scanned for rails (below the horizon)
+    #                                     bottom is ALREADY the last row: the band is not
+    #                                     what runs out when the path sinks -- see
+    #                                     rail_lookahead_below_conv.
+    rail_lookahead: float = 0.75        # frac of H where the lateral offset is measured
+    rail_lookahead_below_conv: float = 0.12
+    #   Keep the look-ahead at least this far BELOW the convergence row. The rails
+    #   diverge downward from the vanishing point, so above it they have crossed and the
+    #   separation goes negative -- which fails the lock on a perfectly good fit. As the
+    #   nose rises the path sinks and the convergence slides down past a fixed 0.75H,
+    #   which is exactly that failure. 0 pins the look-ahead at rail_lookahead.
+    rail_curv_row: float = 0.45         # frac of H used as the curvature (far) reference
+    rail_min_rows: int = 20             # rows that must yield a rail point to fit at all
+    rail_max_fit_rms: float = 6.0       # px; a worse fit is not a rail, it is clutter
+    rail_min_sep_frac: float = 0.05     # min rail separation at look-ahead, frac of W
+    rail_merge_recover: bool = False
+    #   Recover rows where the two rails have MERGED into one narrow run because the path
+    #   is distant. Those rows are otherwise discarded as "one rail, unusable alone",
+    #   which on filt29's g1->g2 leg threw away 86.2% of ticks while the path was plainly
+    #   in frame (area_frac 0.006, rows 0). With this on, such a run's CENTRE is used as
+    #   the path centre. DEFAULT OFF: it has not been validated against real frames from
+    #   that leg -- a merged run yields a bearing to a distant path, not a separation, so
+    #   it is a weaker reference and must be proven before it steers.
+    rail_wide_run_frac: float = 0.06    # a single run at least this wide (frac of W) is
+    #                                     the corridor seen merged: use its two EDGES
 
     # ---- guidance (outer loop, from vision) ----
     # Flight 2: YAW was MASKING lateral error -- it recentres the gate in-frame
@@ -476,6 +528,17 @@ class GateDetector:
         c = self.cfg
         H, W = frame_rgb.shape[0], frame_rgb.shape[1]
         total = H * W
+        # --- PROBE INSTRUMENTATION (branch gate3-pnp-probe) ----------------------
+        # Reports the shape the detector ACTUALLY consumes, once per process. Costs
+        # one module-global bool test per call on the steady-state path -- no
+        # formatting, no I/O, no allocation -- and is OFF unless the env var is set,
+        # so it cannot spam or slow the control loop. Remove with the branch.
+        global _PROBE_SHAPE_LOGGED
+        if _PROBE_FRAME_SHAPE and not _PROBE_SHAPE_LOGGED:
+            _PROBE_SHAPE_LOGGED = True
+            print(f"[PROBE] GateDetector.detect() input shape = "
+                  f"H={H} W={W} C={frame_rgb.shape[2] if frame_rgb.ndim > 2 else 1} "
+                  f"dtype={frame_rgb.dtype}", flush=True)
         mask = self._mask(frame_rgb)
         n_true = int(mask.sum())
         # Empty, or the mask blew up (bad thresholds / whole-frame red) -> not a gate.
@@ -513,61 +576,275 @@ class GateDetector:
 
 @dataclass
 class TubeMeasurement:
-    found: bool
-    u_tube: float = 0.0     # lower-band horizontal centre, [-1,1], + = tube RIGHT of us
+    found: bool             # LOCK: both rails fitted. The only validity flag.
+    u_tube: float = 0.0     # lateral offset at look-ahead, [-1,1], + = path RIGHT of us
     curvature: float = 0.0  # u_upper - u_lower; + = course bends RIGHT ahead
-    u_lower: float = 0.0
-    u_upper: float = 0.0
-    area_frac: float = 0.0
+    u_lower: float = 0.0    # path centre at the look-ahead row
+    u_upper: float = 0.0    # path centre at the far (curvature) row
+    area_frac: float = 0.0  # REPORTED ONLY -- never gates anything (see rail_score_min)
+    # --- rail geometry -------------------------------------------------------------
+    v_converge: float = 0.0   # vanishing point row, [-1,1], + = BELOW frame centre
+    converge_ok: bool = False  # the rails actually meet inside/near the frame
+    rail_sep: float = 0.0     # rail separation at look-ahead, frac of W
+    n_rows: int = 0           # rows that contributed a rail point
+    fit_rms: float = 0.0      # worse of the two rails' fit residual, px
+    y_look: float = 0.0       # the row the offset was measured at, px (may be ADAPTIVE:
+    #                           it is pushed below the convergence as the path sinks)
+    n_merged: int = 0         # rows where the two rails were MERGED into one narrow run
+    #                           (a distant path): a bearing, not a separation -- see
+    #                           ServoConfig.rail_merge_recover
+    left_poly: tuple = ()     # x = f(y) quadratic coefficients, px (for the overlay)
+    right_poly: tuple = ()
 
 
 class TubeDetector:
-    """Detector for the cyan guidance tube down the course centre.
+    """RAIL detector for the cyan course path.
 
-    WIRED into HybridController's lateral channel (u_lower centring + curvature
-    lead); measurement-only in VisionServoController. Exposes a coarse
-    course-following signal far more continuous than a distant gate blob:
+    THE PATH IS TWO LINES, NOT A REGION. The previous version masked cyan and asked
+    how much of the frame it covered. That is the wrong question about a thin bright
+    curve: a rail that is one or two pixels wide is fully visible and still has
+    essentially zero area, so the area test read "not found" on frames where a human
+    can see the path perfectly. That is the sub-4% lock rate -- a FALSE NEGATIVE, not
+    a weak signal. Nothing here gates on area; area_frac is reported for the log only.
 
-      u_tube    -- horizontal centre of the tube in a LOWER band (nearest/widest,
-                   most stable). Keep ~0 to stay centred on the course.
-      curvature -- (upper-band centre) - (lower-band centre): the far part of the
-                   tube shifting right of the near part means the course bends
-                   right ahead. Anticipatory steering a single gate can't give.
+    METHOD, per frame:
+      1. Threshold on CHROMA, not brightness: score = min(G,B) - R. The rails are the
+         only saturated cyan in a scene made of grey buildings and a red gate, and
+         this score is ~0 on grey whatever its brightness, so it separates the rails
+         from bright white scenery that any value/luminance threshold would admit.
+      2. Per row, group masked pixels into runs and take the OUTERMOST ones: the left
+         rail is the first run, the right rail the last. The wide run in between is
+         the hazy corridor floor, and taking outer runs discards it for free. A single
+         WIDE run means the two rails have merged (close range / low altitude); its
+         two EDGES are then the two boundaries, which is the same measurement.
+      3. Fit x = f(y) as a quadratic per rail, ROBUSTLY -- iteratively rejecting
+         points beyond 3 MAD. The rails are smooth curves; clutter is not, and a
+         handful of bright pixels off a building must not bend the fit. Measured on
+         vision_frame.png the fits land at 1.2 px RMS over ~200 rows.
+      4. Report the path centre at a fixed LOOK-AHEAD row, and the row where the two
+         fitted rails meet (the vanishing point).
+
+    Outputs (all normalised [-1,1] unless noted):
+      found       -- LOCK: both rails fitted and plausible. The only validity flag.
+      u_tube      -- path centre minus frame centre at the look-ahead row. This is
+                     the lateral offset: 0 = centred on the path.
+      v_converge  -- vanishing-point row; + = below frame centre. Where the path
+                     runs off to, i.e. the course's vertical position ahead.
+      curvature   -- far centre minus near centre; + = the course bends RIGHT ahead.
     """
 
     def __init__(self, cfg: ServoConfig):
         self.cfg = cfg
 
     def _mask(self, frame_rgb: np.ndarray) -> np.ndarray:
-        h, s, v = rgb_to_hsv_arrays(frame_rgb)
-        c = self.cfg
-        return ((h >= c.tube_hue_lo) & (h <= c.tube_hue_hi)
-                & (s >= c.tube_sat_min) & (v >= c.tube_val_min))
+        """CHROMA mask. int16 so the G/B minus R difference can go negative without
+        wrapping (uint8 would make grey scenery look like a huge positive score)."""
+        f = frame_rgb.astype(np.int16)
+        R, G, B = f[:, :, 0], f[:, :, 1], f[:, :, 2]
+        gb = np.minimum(G, B)
+        return (gb - R >= self.cfg.rail_score_min) & (gb >= self.cfg.rail_val_min)
 
-    def _band_center(self, mask, y0f, y1f):
-        """Normalised horizontal centre of masked pixels in a horizontal band, or
-        None if the band is too sparse to trust."""
+    def _row_runs(self, row_mask):
+        """Contiguous runs of masked pixels in one row as (x0, x1) inclusive. Runs
+        separated by less than rail_merge_gap_px are joined: a rail broken by
+        compression noise is one rail, not two."""
+        x = np.nonzero(row_mask)[0]
+        if x.size == 0:
+            return []
+        splits = np.nonzero(np.diff(x) > self.cfg.rail_merge_gap_px)[0]
+        runs, start = [], 0
+        for s in splits:
+            runs.append((int(x[start]), int(x[s])))
+            start = s + 1
+        runs.append((int(x[start]), int(x[-1])))
+        return [r for r in runs if r[1] - r[0] + 1 >= self.cfg.rail_min_run_px]
+
+    def _rail_points(self, mask):
+        """Per-row (y, x_left, x_right) for the two rail boundaries."""
+        c = self.cfg
         H, W = mask.shape
-        y0, y1 = int(y0f * H), int(y1f * H)
-        band = mask[y0:y1, :]
-        n = int(band.sum())
-        if band.size == 0 or n < self.cfg.tube_min_band_frac * band.size:
+        y0, y1 = int(c.rail_band[0] * H), int(c.rail_band[1] * H)
+        wide = c.rail_wide_run_frac * W
+        ys, xl, xr = [], [], []
+        merged = 0
+        for y in range(y0, y1):
+            runs = self._row_runs(mask[y])
+            if not runs:
+                continue
+            if len(runs) >= 2:
+                # Outermost runs are the rails; anything between them is the floor.
+                a, b = runs[0], runs[-1]
+                left, right = 0.5 * (a[0] + a[1]), 0.5 * (b[0] + b[1])
+            else:
+                a = runs[0]
+                if a[1] - a[0] + 1 < wide:
+                    # ONE THIN RUN. Ambiguous: either a single rail (the other is out of
+                    # frame or unlit -- unusable alone, no centre can be derived), or the
+                    # two rails MERGED because the path is far enough away that they sit
+                    # within rail_merge_gap_px of each other.
+                    # MEASURED on filt29 leg 1 (g1->g2): 86.2% of ticks yielded ZERO rows
+                    # while area_frac stayed at 0.006, i.e. the path was plainly in frame
+                    # and every row was being discarded here. Reproduced synthetically: a
+                    # path whose rails close to 8 px apart gives 0 rows at area 0.011.
+                    # With recovery on, the run's CENTRE is taken as the path centre and
+                    # the row contributes to steering but not to a separation estimate.
+                    if not c.rail_merge_recover:
+                        continue
+                    mid = 0.5 * (a[0] + a[1])
+                    left = right = float(mid)
+                    merged += 1
+                else:
+                    left, right = float(a[0]), float(a[1])   # merged corridor -> edges
+            ys.append(y)
+            xl.append(left)
+            xr.append(right)
+        return (np.asarray(ys, float), np.asarray(xl, float), np.asarray(xr, float),
+                merged)
+
+    @staticmethod
+    def _robust_quadfit(y, x, iters=5):
+        """Quadratic x = f(y) with iterative outlier rejection at 3 MAD. Returns
+        (coeffs, keep_mask, rms) or None if it cannot be fitted."""
+        if y.size < 3:
             return None
-        cx = float(np.nonzero(band)[1].mean())
-        return (cx - W / 2.0) / (W / 2.0)
+        keep = np.ones(y.size, bool)
+        coef = None
+        for _ in range(iters):
+            if keep.sum() < 3:
+                return None
+            coef = np.polyfit(y[keep], x[keep], 2)
+            res = np.abs(x - np.polyval(coef, y))
+            # MAD -> sigma, floored at 1 px so a near-perfect fit does not reject
+            # everything on floating-point dust.
+            sigma = max(1.4826 * float(np.median(res[keep])), 1.0)
+            new = res < 3.0 * sigma
+            if new.sum() < 3 or np.array_equal(new, keep):
+                break
+            keep = new
+        rms = float(np.sqrt(np.mean((x[keep] - np.polyval(coef, y[keep])) ** 2)))
+        return coef, keep, rms
 
     def measure(self, frame_rgb: np.ndarray) -> TubeMeasurement:
         c = self.cfg
         mask = self._mask(frame_rgb)
-        area_frac = float(mask.sum()) / mask.size
-        u_lower = self._band_center(mask, *c.tube_lower_band)
-        u_upper = self._band_center(mask, *c.tube_upper_band)
-        if u_lower is None:
-            return TubeMeasurement(found=False, area_frac=area_frac)
-        curv = (u_upper - u_lower) if u_upper is not None else 0.0
-        return TubeMeasurement(found=True, u_tube=u_lower, curvature=curv,
-                               u_lower=u_lower, u_upper=(u_upper or 0.0),
-                               area_frac=area_frac)
+        H, W = mask.shape
+        area_frac = float(mask.sum()) / mask.size      # REPORTED, never a gate
+        ys, xl, xr, n_merged = self._rail_points(mask)
+        if ys.size < c.rail_min_rows:
+            return TubeMeasurement(found=False, area_frac=area_frac, n_rows=int(ys.size),
+                                   n_merged=int(n_merged))
+        fl = self._robust_quadfit(ys, xl)
+        fr = self._robust_quadfit(ys, xr)
+        if fl is None or fr is None:
+            return TubeMeasurement(found=False, area_frac=area_frac, n_rows=int(ys.size),
+                                   n_merged=int(n_merged))
+        cl, keep_l, rms_l = fl
+        cr, keep_r, rms_r = fr
+        rms = max(rms_l, rms_r)
+
+        def norm_x(px):
+            return (px - W / 2.0) / (W / 2.0)
+
+        y_far = c.rail_curv_row * H
+        # VANISHING POINT: where the two fitted rails meet. Their difference is a
+        # quadratic in y; take the real root nearest the top of the frame, which is
+        # the convergence ahead rather than the spurious one far below.
+        # Resolved BEFORE the look-ahead row, because the look-ahead has to sit below it.
+        v_px, converge_ok = 0.0, False
+        diff = np.asarray(cl, float) - np.asarray(cr, float)
+        roots = np.roots(diff) if np.any(np.abs(diff[:2]) > 1e-12) else np.array([])
+        real = [float(r.real) for r in np.atleast_1d(roots) if abs(r.imag) < 1e-6]
+        # Accept only a convergence at or above the scanned band (the path runs AWAY
+        # from us), within one frame height of the top -- anything else is the fit's
+        # far branch, not the vanishing point.
+        cand = [r for r in real if -H <= r <= c.rail_band[1] * H]
+        if cand:
+            v_px, converge_ok = max(cand), True
+        else:
+            v_px = float(min(ys))     # fall back to the highest row a rail was seen on
+
+        # --- ADAPTIVE LOOK-AHEAD ------------------------------------------------------
+        # The rails DIVERGE downward from the vanishing point, so a measurement row is
+        # only meaningful BELOW it. As the nose rises the path sinks in frame and the
+        # convergence row slides down past a fixed look-ahead; at that point the two
+        # fitted curves have already CROSSED at the measurement row and the separation
+        # goes NEGATIVE, which fails the lock test even though the fit is perfect.
+        # MEASURED on vision_frame.png rolled down 150 px (the path sinking as the nose
+        # relaxes): rows 50 and rms 0.40 -- both healthy -- but sep -0.050, no lock. It
+        # is not the search band that runs out (that already reaches the bottom row);
+        # it is the look-ahead ending up on the wrong side of the convergence.
+        # So the look-ahead is pushed to stay at least `rail_lookahead_below_conv` of a
+        # frame BELOW the convergence, which restores the lock (sep +0.108 at 0.85H) and
+        # also measures the centre where the rails are well separated rather than nearly
+        # coincident. Set the margin to 0 to pin the look-ahead at its fixed row.
+        y_look = c.rail_lookahead * H
+        if c.rail_lookahead_below_conv > 0.0:
+            y_look = max(y_look, v_px + c.rail_lookahead_below_conv * H)
+            y_look = min(y_look, H - 1.0)
+        xl_look, xr_look = float(np.polyval(cl, y_look)), float(np.polyval(cr, y_look))
+        sep = (xr_look - xl_look) / W
+        u_lower = norm_x(0.5 * (xl_look + xr_look))
+        u_upper = norm_x(0.5 * (float(np.polyval(cl, y_far))
+                                + float(np.polyval(cr, y_far))))
+        lock = (rms <= c.rail_max_fit_rms
+                and sep >= c.rail_min_sep_frac
+                and int(keep_l.sum()) >= c.rail_min_rows
+                and int(keep_r.sum()) >= c.rail_min_rows)
+        return TubeMeasurement(
+            found=bool(lock), u_tube=u_lower, curvature=(u_upper - u_lower),
+            u_lower=u_lower, u_upper=u_upper, area_frac=area_frac,
+            v_converge=(v_px - H / 2.0) / (H / 2.0), converge_ok=converge_ok,
+            rail_sep=float(sep), n_rows=int(min(keep_l.sum(), keep_r.sum())),
+            fit_rms=rms, y_look=float(y_look), n_merged=int(n_merged),
+            left_poly=tuple(float(v) for v in cl),
+            right_poly=tuple(float(v) for v in cr))
+
+
+def draw_rail_overlay(frame_rgb, m, cfg):
+    """Render a TubeMeasurement back onto its frame: the two fitted rail curves, the
+    measured path centre vs frame centre at the look-ahead row, the convergence row, and
+    a lock/no-lock status band.
+
+    THE POINT: the numbers cannot tell you whether the fit is on the real rails or on
+    some bright clutter that happens to fit a parabola. Drawing it back is the check.
+
+    Pure numpy -- no PIL, no fonts -- so the flight process can call it on a worker
+    thread without pulling an image library into the control path. Returns a new array;
+    the input is never modified.
+
+    Colour key:
+      green / red band across the top   LOCK / no lock
+      green curves                      the two fitted rails (red when not locked, i.e.
+                                        what was rejected and why it looked wrong)
+      magenta tick                      measured path centre at the look-ahead row
+      white tick                        frame centre -- the gap between them IS u_tube
+      cyan dashes                       convergence (vanishing point) row
+    """
+    img = np.array(frame_rgb, dtype=np.uint8, copy=True)
+    H, W = img.shape[:2]
+    lock = bool(getattr(m, "found", False))
+    rail_c = (0, 255, 0) if lock else (255, 60, 60)
+
+    def put(x, y, colour, r=1):
+        x, y = int(round(x)), int(round(y))
+        if 0 <= x < W and 0 <= y < H:
+            img[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = colour
+
+    img[0:6, :] = rail_c                      # status band: visible at a glance
+    if getattr(m, "left_poly", ()) and getattr(m, "right_poly", ()):
+        y0, y1 = int(cfg.rail_band[0] * H), int(cfg.rail_band[1] * H)
+        for y in range(y0, y1):
+            put(np.polyval(m.left_poly, y), y, rail_c)
+            put(np.polyval(m.right_poly, y), y, rail_c)
+        y_look = cfg.rail_lookahead * H
+        xc = 0.5 * (np.polyval(m.left_poly, y_look) + np.polyval(m.right_poly, y_look))
+        for dy in range(-7, 8):               # measured centre vs frame centre
+            put(xc, y_look + dy, (255, 0, 255), 1)
+            put(W / 2.0, y_look + dy, (255, 255, 255), 0)
+        yv = m.v_converge * (H / 2.0) + H / 2.0
+        for x in range(0, W, 8):
+            put(x, yv, (0, 255, 255), 0)
+    return img
 
 
 def gravity_to_roll_pitch(gravity_frd):
@@ -1003,7 +1280,12 @@ class HybridController:
             w_gate = float(np.clip(
                 (gate.size_frac - c.hybrid_gate_s_lo)
                 / max(c.hybrid_gate_s_hi - c.hybrid_gate_s_lo, 1e-6), 0.0, 1.0))
-        w_tube = 1.0 if (tube.found and tube.area_frac >= c.hybrid_tube_area_min) else 0.0
+        # tube.found IS the validity test now (both rails fitted). The old
+        # `and area_frac >= hybrid_tube_area_min` conjunct is gone: area is the wrong
+        # question about a thin bright curve -- a fully visible rail one pixel wide has
+        # ~zero area -- so it rejected good locks. hybrid_tube_area_min is retained as a
+        # config field only so existing tune files still load.
+        w_tube = 1.0 if tube.found else 0.0
 
         # --- lateral reference (sim-frame roll setpoint; LATERAL_SIGN, NOT a mirror
         #     -- see module top): GATE -> TUBE -> hold ---

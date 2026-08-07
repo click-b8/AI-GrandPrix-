@@ -38,13 +38,24 @@ def add_square(frame, cx_frac, cy_frac, size_frac, colour=RED_GATE):
 
 
 def make_tube(x_lower_frac, x_upper_frac=None, halfwidth=40, w=640, h=360):
-    """Vertical cyan stripe centred at x_lower_frac in the lower half and
-    x_upper_frac in the upper half (default same) — for curvature tests."""
+    """Cyan path stripe: centred at x_lower_frac at the LOOK-AHEAD row and at
+    x_upper_frac at the CURVATURE row (default same) — for curvature tests.
+
+    The centre RAMPS between those two rows rather than jumping at the midline.
+    It used to jump, which no camera can see: a real rail is a continuous curve,
+    and TubeDetector now fits one, so a stripe that teleports 115 px sideways is
+    correctly rejected as unfittable (16 px residual). Anchoring the ramp on the
+    detector's own two reference rows keeps each test's intent exact — "upper
+    shifted right ⇒ curvature > 0" — while being a shape that can physically exist.
+    """
     if x_upper_frac is None:
         x_upper_frac = x_lower_frac
     frame = np.full((h, w, 3), 20, dtype=np.uint8)
+    c = ServoConfig()
+    y_far, y_look = c.rail_curv_row * h, c.rail_lookahead * h
     for y in range(h):
-        frac = x_upper_frac if y < h // 2 else x_lower_frac
+        t = (y - y_far) / (y_look - y_far)       # 0 at the far row, 1 at look-ahead
+        frac = min(0.95, max(0.05, x_upper_frac + t * (x_lower_frac - x_upper_frac)))
         cx = int(frac * w)
         frame[y, max(0, cx - halfwidth):cx + halfwidth] = TUBE_CYAN
     return frame

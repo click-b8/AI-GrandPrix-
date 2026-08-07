@@ -1,8 +1,0 @@
-- OS: Linux-4.18.0-553.94.1.el8_10.x86_64-x86_64-with-glibc2.28 # 1 SMP Fri Jan 23 10:30:05 UTC 2026
-- Python: 3.12.4
-- Stable-Baselines3: 2.7.1
-- PyTorch: 2.6.0+cu124
-- GPU Enabled: True
-- Numpy: 2.3.5
-- Cloudpickle: 3.1.2
-- Gymnasium: 1.2.3

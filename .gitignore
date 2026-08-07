@@ -1,49 +1,19 @@
-.venv/
-venv/
 __pycache__/
+.pytest_cache/
 *.pyc
-*.egg-info/
-MUJOCO_LOG.TXT
-
-# Trained models (large binary files)
-trained*/
-*.zip
-*.npy
-
-# VQ1 deployment artifacts — tracked despite the patterns above.
-# Added by refactor/deduplicate-root-subdir: these are load-bearing
-# for test_dcl_adapter.py and for any fresh clone that wants to run
-# the adapter end-to-end. Other trained*/ dirs (historical runs,
-# stored only in drone-race-sim/) remain ignored.
-!trained_distilled/
-!trained_distilled/**
-!models_release/*.zip
-
-# Recorded videos
-*.mp4
-
-# Tensorboard logs
-tb_logs/
-
-# Snapshots/images
-*.png
-
-# macOS
-.DS_Store
-
-# Temp/debug
-train_events.log
-
-# Trajectory logger/viz output — generated debug files, not for repo
-trajectory_log.csv
-trajectory_plot.html
-
-# Personal Claude Code settings
-.claude/settings.local.json
-
-# grinder machine-specific / runtime artifacts
-ui_reset.json
-grind_logs/
-openloop_tune.json
-tune_logs/
-openloop_tune_journal.jsonl
+*.log.err
+_to_delete/
+*.bak*
+# Bulk experiment data — published subset is tracked explicitly; full raw set
+# ships as a GitHub Release asset (see results/overnight-2026-08-03/REPRODUCE.md)
+archive/tuning-runs/
+archive/frames/
+archive/rl-training/*.zip
+archive/rl-training/models_release/
+archive/rl-training/trained_distilled/
+archive/rl-training/surface_seed0/
+archive/rl-training/surface_seed1/
+archive/rl-training/AI_GrandPrix_Models/
+archive/rl-training/evaluations.npz
+results/overnight-2026-08-03/gate3_leg_traces/
+results/overnight-2026-08-03/diagnostic/
