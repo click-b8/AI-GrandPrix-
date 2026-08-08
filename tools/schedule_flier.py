@@ -572,7 +572,7 @@ def rail_vert_targets(sched, anchor_target, anchor_leg=2, per_deg=0.0):
     target everywhere -- because the scale has not been measured: it needs the camera's
     vertical FOV, or a flight that logs v_converge across two legs of known slope. That
     measurement is one --log-tube flight away (read the per-leg v_converge medians out of
-    claude/protocol.py); until then a derived table would be invented precision.
+    archive/notes/design-specs/protocol.py); until then a derived table would be invented precision.
     """
     if not sched:
         return []
@@ -2895,7 +2895,7 @@ def build_parser():
                          "so the anchor keeps its meaning on the leg it was tuned for. "
                          "Default 0.035 is the value the CURRENT gates-1-and-2 baseline "
                          "flies, and it supersedes the 0.026 in "
-                         "claude/altitude-ladder-spec.md -- that figure was the anchor "
+                         "archive/notes/design-specs/altitude-ladder-spec.md -- that figure was the anchor "
                          "before the ladder was flown, and the spec was not updated when "
                          "0.035 proved out. Pass 0.026 to reproduce the spec's table "
                          "exactly. 0 disables the ladder entirely.")
@@ -3348,7 +3348,7 @@ def build_parser():
                          "(12.1 deg). A steeper leg puts the vanishing point LOWER in "
                          "frame, so the true equilibrium on g1->g2 (17.1 deg) is somewhat "
                          "higher than -0.35. Fly once with --log-tube, read the leg's "
-                         "median v_converge out of claude/protocol.py, and set this to "
+                         "median v_converge out of archive/notes/design-specs/protocol.py, and set this to "
                          "it. See --rail-vert-target-per-deg for deriving the rest.")
     ap.add_argument("--rail-vert-target-per-deg", type=float, default=0.0, metavar="V",
                     help="--coast-tube: v_converge target shift per degree of leg slope "

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone training supervisor -- outlives any Claude session.
+"""Standalone training supervisor -- outlives any interactive session.
 
 Launches a training script (default train_vision.py) as a subprocess,
 relaunches it if it exits abnormally, and logs periodic health (ep_len_mean,

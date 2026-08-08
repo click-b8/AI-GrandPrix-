@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Zero-Claude-involvement bootstrap for AI Grand Prix VQ1 training on a
+    Fully unattended bootstrap for AI Grand Prix VQ1 training on a
     fresh Windows machine (work render box, unknown prior state).
 .DESCRIPTION
     venv -> pinned installs -> CUDA check (warn, don't die) -> checkpoint

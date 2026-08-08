@@ -110,7 +110,7 @@ One command does the whole sequence end to end:
    a 100-step smoke run of `train_vision.py` to prove the mechanics work on
    this machine before committing to a real run.
 6. Launches the seed-1 resume under `tools/guardian.py` — a standalone
-   supervisor (not tied to any Claude session) that relaunches training if it
+   supervisor (not tied to any interactive session) that relaunches training if it
    crashes, and logs `ep_len_mean` / `gates_passed` / free-disk-GB to
    `<save-dir>/guardian.log` on a fixed interval. Auto-resume-from-checkpoint
    and keep-last-N checkpoint pruning are unchanged — they still live inside

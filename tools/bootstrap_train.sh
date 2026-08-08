@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Zero-Claude-involvement bootstrap for AI Grand Prix VQ1 training on a
+# Fully unattended bootstrap for AI Grand Prix VQ1 training on a
 # fresh Linux machine (DGX or otherwise, unknown prior state).
 #
 # venv -> pinned installs -> CUDA check (warn, don't die) -> checkpoint

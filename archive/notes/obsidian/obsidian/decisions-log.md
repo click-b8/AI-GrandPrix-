@@ -362,17 +362,17 @@ things that probably deserve revisiting.
 
 ---
 
-## 2026-04-28 — Read-only autonomous Claude Code tasks accepted as viable workflow
+## 2026-04-28 — Read-only autonomous analysis tasks accepted as viable workflow
 
 - **Date:** 2026-04-28.
-- **Decision:** read-only autonomous Claude Code investigation
+- **Decision:** read-only autonomous investigation
   tasks are accepted as a viable workflow for bounded scopes,
   subject to specific constraints.
 - **Constraints (non-negotiable for any future autonomous run):**
   - No commits, no pushes, no git state changes.
   - No code modifications outside a single named output document.
   - No deletes, no installs, no test runs, no training runs.
-  - Explicit halt-marker mechanism: if Claude encounters
+  - Explicit halt-marker mechanism: if the investigation encounters
     something outside expected scope, it writes
     `PROMINENT_ISSUE_FOUND.md` at repo root and stops
     investigation rather than incorporating the surprise.

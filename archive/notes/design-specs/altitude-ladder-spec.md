@@ -1,4 +1,4 @@
-# VQ1 altitude ladder — per-leg vertical feedforward (spec for Claude Code)
+# VQ1 altitude ladder — per-leg vertical feedforward (implementation spec)
 
 ## Why (flt8 result — the pitch slowdown is DEAD)
 `--pitch-hold-deg -15` failed hard: estP ran -17.8 -> +25.6 deg (nose-up runaway), drone
@@ -37,7 +37,7 @@ Behavior:
 Do NOT touch: pitch (coast, Change D off), LPF, far-gate reject, lateral, kd_lat=0.
 
 ## Tuning loop
-Fly -> python claude/protocol.py filtN.csv -> each gate closest-approach v_err:
+Fly -> python archive/notes/design-specs/protocol.py filtN.csv -> each gate closest-approach v_err:
   v_err > +0.1 (high): raise that leg bias.  v_err < -0.1 (low): lower it.
   Delta bias ~= v_err/126 per leg. One leg at a time. Anchor G1->G2=0.026 is proven.
 

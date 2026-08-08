@@ -1,7 +1,7 @@
-# VQ1 control redesign — FF + PID + LPF (spec for Claude Code)
+# VQ1 control redesign — FF + PID + LPF (implementation spec)
 
 Goal: stop tuning blind constants; make every adjustment analytical. Diagnostic tool:
-`claude/protocol.py` — run on any `filtN.csv` for per-gate closest-approach error.
+`archive/notes/design-specs/protocol.py` — run on any `filtN.csv` for per-gate closest-approach error.
 IMPORTANT: protocol.py samples at the **peak-size (closest-approach) tick** of each gate
 window, NOT the ag-transition tick. That is why gate-1 reads v_err ≈ −0.11 (window min at
 closest approach) while the ag→1 tick shows v_err ≈ +0.5. Use protocol.py's number.
@@ -17,9 +17,9 @@ Frontier is gate 3. Per-gate closest-approach (protocol.py):
 
 ## PRIORITY 1 — Lateral derivative damping (DONE, pending gain approval)
 Implemented: `du_lat = LATERAL_SIGN*sign*(u_f − u_f2)/tau`, `trim = clamp(k_gate_bank*u_lat
-− kd_lat*du_lat)`, flag `--kd-lat`. Two implementation notes from Claude Code, both correct
+− kd_lat*du_lat)`, flag `--kd-lat`. Two implementation notes from the replay analysis, both correct
 and APPROVED:
-1. **Default gain = 0.30, NOT 0.8.** Claude Code's filt5 ag=2 replay: kd_lat=0.8 makes D
+1. **Default gain = 0.30, NOT 0.8.** The filt5 ag=2 replay: kd_lat=0.8 makes D
    larger than P at the close-range rush (D/P=1.08) and RAISES peak reversal 24.8→187.6
    deg/s. 0.30 is the largest gain that keeps peak ≤ pure-P (24.5) while cutting clamp
    saturation 25/40→19/40. **Set the default to 0.30.**
