@@ -236,8 +236,12 @@ def load_course_json(path, recenter_to_start=True, start_altitude_m=3.0,
 # the course file is missing/corrupt, and silently racing the wrong geometry is
 # far worse than a hard, diagnostic stop.
 # ---------------------------------------------------------------------------
-_COURSE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "course_gates_cm.json")
+# One level up: track.py lives in analysis/, but course_gates_cm.json stays at the
+# repo root because nav_frames.py (still at the root) resolves it next to ITSELF.
+# Moving or duplicating the file would trade one breakage for another.
+_COURSE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "course_gates_cm.json")
 
 try:
     RACE_TRACK, SPAWN = load_course_json(
@@ -246,6 +250,6 @@ except Exception as exc:  # noqa: BLE001 -- re-raised loudly with diagnostics
     raise RuntimeError(
         f"track.py: failed to load the live course from {_COURSE_PATH!r}: "
         f"{type(exc).__name__}: {exc}. This is fatal by design -- there is NO "
-        f"placeholder fallback. Confirm course_gates_cm.json exists next to "
-        f"track.py and passes the UE->MuJoCo self-validation."
+        f"placeholder fallback. Confirm course_gates_cm.json exists at the "
+        f"repo root and passes the UE->MuJoCo self-validation."
     ) from exc

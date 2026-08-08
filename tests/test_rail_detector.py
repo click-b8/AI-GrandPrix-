@@ -25,7 +25,10 @@ from PIL import Image
 from vq1_vision_servo import ServoConfig, TubeDetector
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRAME = os.path.join(ROOT, "vision_frame.png")
+# Fixture lives with the tests: the source frame sits in archive/frames/, which is
+# gitignored bulk data, so a clone would otherwise skip every detector test.
+FRAME = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "fixtures", "vision_frame.png")
 
 real_frame = pytest.mark.skipif(not os.path.exists(FRAME),
                                 reason="vision_frame.png not present")

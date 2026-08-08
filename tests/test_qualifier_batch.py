@@ -24,7 +24,8 @@ sys.path.insert(0, ROOT)
 
 from flight_report import analyse, main as report_main   # noqa: E402
 
-PS1 = os.path.join(ROOT, "run_qualifier_batch.ps1")
+# The batch script moved to automation/ in the portfolio restructure.
+PS1 = os.path.join(ROOT, "automation", "run_qualifier_batch.ps1")
 DEEP_SIZE = 0.45
 
 COLS = ["t", "seg", "active_gate", "loop_hz", "u_f", "v_err", "size_frac", "gate_found",

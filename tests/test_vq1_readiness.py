@@ -30,6 +30,10 @@ import numpy as np
 import pytest
 
 ROOT = os.path.join(os.path.dirname(__file__), '..')
+# Relocated by the portfolio restructure. These tests still exercise the archived
+# deployment path deliberately, so they resolve the files where they now live.
+DCL_DIR = os.path.join(ROOT, 'archive', 'dcl-hardware')
+RUN_VQ1 = os.path.join(ROOT, 'archive', 'experiments', 'run_vq1.py')
 import sys
 sys.path.insert(0, ROOT)
 
@@ -328,7 +332,7 @@ class TestPackageStructure:
         assert not violations, "Dead Desktop paths found:\n" + "\n".join(violations)
 
     def test_entry_point_exists(self):
-        assert os.path.exists(os.path.join(ROOT, 'run_vq1.py')), \
+        assert os.path.exists(RUN_VQ1), \
             "run_vq1.py entry point missing"
 
     def test_requirements_includes_pymavlink(self):
@@ -345,7 +349,7 @@ class TestPackageStructure:
         # This avoids matching prose like "strict=False inside try/except"
         kwarg_pattern = re.compile(r'[,(]\s*strict\s*=\s*False')
         for fname in ['dcl_adapter.py', 'dcl_mavlink_adapter.py']:
-            fpath = os.path.join(ROOT, fname)
+            fpath = os.path.join(DCL_DIR, fname)
             with open(fpath) as f:
                 for lineno, line in enumerate(f, 1):
                     # Skip comment lines
@@ -361,7 +365,8 @@ class TestPackageStructure:
         import re
         pattern = re.compile(r'except\s*(\w+\s*)?:\s*pass')
         for fname in ['dcl_adapter.py', 'dcl_mavlink_adapter.py', 'run_vq1.py']:
-            fpath = os.path.join(ROOT, fname)
+            fpath = (RUN_VQ1 if fname == 'run_vq1.py'
+                     else os.path.join(DCL_DIR, fname))
             with open(fpath) as f:
                 for lineno, line in enumerate(f, 1):
                     assert not pattern.search(line), \
@@ -383,6 +388,9 @@ class TestPackageStructure:
         loop from silently emitting MAVLink commands based on zero-input
         inference. See obsidian/fragilities.md §Silent failure chain."""
         import importlib, sys
+        _exp = os.path.join(ROOT, 'archive', 'experiments')
+        if _exp not in sys.path:
+            sys.path.insert(0, _exp)
         if 'run_vq1' in sys.modules:
             importlib.reload(sys.modules['run_vq1'])
         import run_vq1
@@ -397,6 +405,9 @@ class TestPackageStructure:
         main) must let _get_vision_frame() return the black-frame stub
         unchanged. Covers the dev/testing path."""
         import importlib, sys
+        _exp = os.path.join(ROOT, 'archive', 'experiments')
+        if _exp not in sys.path:
+            sys.path.insert(0, _exp)
         if 'run_vq1' in sys.modules:
             importlib.reload(sys.modules['run_vq1'])
         import run_vq1
@@ -425,7 +436,7 @@ class TestPackageStructure:
         _require_10d_checkpoint(distill)
 
         proc = subprocess.Popen(
-            [sys.executable, os.path.join(ROOT, "run_vq1.py"),
+            [sys.executable, RUN_VQ1,
              "--allow-stub-vision",
              "--hz", "50",
              "--port", "19999"],  # unbound UDP port; sendto is best-effort, silently drops

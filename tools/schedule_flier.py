@@ -43,6 +43,13 @@ from pymavlink import mavutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+# The DCL hardware adapters (dcl_mavlink_adapter, dcl_vision_receiver) were relocated to
+# archive/dcl-hardware/ in the portfolio restructure while these imports kept their bare
+# module names; dcl_adapter in turn imports vision_model, which moved to
+# archive/rl-training/. Path resolution only -- no control law, parameter or message is
+# affected.
+for _d in ("archive/dcl-hardware", "archive/rl-training"):
+    sys.path.insert(0, os.path.join(ROOT, *_d.split("/")))
 from vq1_vision_servo import (  # noqa: E402
     gravity_to_roll_pitch, ServoConfig, MAX_BODY_RATE, LATERAL_SIGN, apply_openloop_tune,
     TubeDetector, GateDetector, SPAWN_PITCH_DEG, draw_rail_overlay)

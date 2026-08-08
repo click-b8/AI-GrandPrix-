@@ -32,7 +32,10 @@ from tools.schedule_flier import (RailSignal, blend_lateral, build_parser, lag_s
                                   rail_bank_cmd)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRAME = os.path.join(ROOT, "vision_frame.png")
+# Fixture lives with the tests: the source frame sits in archive/frames/, which is
+# gitignored bulk data, so a clone would otherwise skip every detector test.
+FRAME = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "fixtures", "vision_frame.png")
 
 K_LAT, CLAMP_DEG = 0.5, 11.0
 TAU, HOLD, DECAY, AUTH_TAU = 0.2, 0.4, 0.5, 0.3
