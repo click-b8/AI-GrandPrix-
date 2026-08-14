@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you reference this work, please cite it as below."
+title: "AI Grand Prix VQ1: Vision-Based Autonomous Drone Racing Controller and Campaign Forensics"
+authors:
+  - family-names: "Brande"
+    given-names: "Noah"
+type: software
+repository-code: "https://github.com/click-b8/AI-GrandPrix-"
+date-released: "2026-08-03"
+keywords:
+  - autonomous-systems
+  - drone-racing
+  - computer-vision
+  - control-systems
+  - mavlink
+license: MIT
+abstract: >-
+  A vision-only classical controller for the Anduril AI Grand Prix Virtual
+  Qualifier (simulated drone racing, no position telemetry), with unattended
+  campaign automation and a 546-attempt overnight dataset whose forensic
+  replay located systematic, non-random failure mechanisms at the third gate.

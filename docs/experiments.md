@@ -37,4 +37,4 @@ Every mechanism below shipped as a default-off flag, was tested in live flights 
 
 - **Offline replay before live tests:** every threshold that mattered (commit rate/dwell, descent size, hold duration) was swept against logged runs before a flag was flown. The final latch investigation replayed 187k ticks across 302 runs and flew nothing.
 - **Metric integrity:** the "max-size frame" crossing metric silently measured post-plane spurious detections; correcting it to the true crossing (deepest stable pre-loss frame) inverted a major conclusion. Lesson: audit the metric before trusting the trend.
-- **One variable per flight; freeze-and-guard:** validated behavior immediately became the baseline that later experiments were forbidden to touch, enforced by ~530 tests including bit-for-bit default-off checks.
+- **One variable per flight; freeze-and-guard:** validated behavior immediately became the baseline that later experiments were forbidden to touch, enforced by 538 tests including bit-for-bit default-off checks.

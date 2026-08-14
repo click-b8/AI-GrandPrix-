@@ -1,268 +1,200 @@
-# AI Grand Prix — VQ1 Autonomous Racing Drone
+# AI Grand Prix — Vision-Based Autonomous Drone Racing
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20PowerShell%205.1-0078D6?logo=windows&logoColor=white)](#5-quick-start)
-[![Tests](https://img.shields.io/badge/tests-423%20passed%2C%20114%20skipped-success)](#5-quick-start)
-[![Competition](https://img.shields.io/badge/AI%20Grand%20Prix-Virtual%20Qualifier%20R1-E4572E)](https://www.theaigrandprix.com)
-[![Result](https://img.shields.io/badge/result-did%20not%20qualify-lightgrey)](#6-results--findings)
+A vision-only autonomous racing controller for the [Anduril AI Grand Prix](https://www.theaigrandprix.com) Virtual Qualifier: a simulated racing drone flown through a gate course using nothing but a forward camera over MAVLink — no GPS, no position telemetry, no pose — plus the automation and forensic-analysis infrastructure built to campaign it.
 
-Vision-only autonomous drone racing for the [AI Grand Prix](https://www.theaigrandprix.com)
-(Anduril / DCL / Neros) Virtual Qualifier — a controller that flies a simulated racing
-drone through a gate course using **only a forward camera feed over MAVLink**: no GPS, no
-position telemetry, no absolute coordinates.
+![Python](https://img.shields.io/badge/python-3.11+-2a78d6) ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20PowerShell%205.1-52514e) ![Tests](https://img.shields.io/badge/tests-424%20passed%2C%20114%20skipped-1baf7a) ![License](https://img.shields.io/badge/license-MIT-52514e) ![Competition](https://img.shields.io/badge/AI%20Grand%20Prix-Virtual%20Qualifier%20R1-eb6834)
+
+![Autonomous flight through Gates 1 and 2](docs/media/gate2_pass.gif)
+
+<sub>Run `flit56`, 2026-07-30 — the controller flying itself from the start countdown through Gate 1 and Gate 2, then banking onto the Gate-3 leg. The only input is the forward camera; the HUD speed and race clock are the simulator's. Full clip: [`docs/media/gate2_pass.mp4`](docs/media/gate2_pass.mp4).</sub>
+
+**Result up front: VQ1 was not qualified.** Gate 3 was never registered in 546 automated attempts. What this repository documents is the engineering around that fact: a classical vision-servo controller that reliably cleared Gates 1–2, an unattended simulator-campaign system that ran all night without intervention, and a 302-run forensic dataset that located the failure mechanism — systematic, not random.
 
 ---
 
 ## Table of Contents
 
-1. [System Overview](#1-system-overview)
-2. [Architecture](#2-architecture)
-3. [Software Map](#3-software-map)
-4. [The Problem](#4-the-problem)
-5. [Quick Start](#5-quick-start)
-6. [Results & Findings](#6-results--findings)
-7. [Repository Structure](#7-repository-structure)
-8. [Data & Reproducibility](#8-data--reproducibility)
-9. [Lessons Learned & Future Work](#9-lessons-learned--future-work)
-10. [Acknowledgments](#10-acknowledgments)
+1. [Result at a Glance](#result-at-a-glance)
+2. [The Challenge](#the-challenge)
+3. [Architecture](#architecture)
+4. [Control Strategy](#control-strategy)
+5. [Engineering Results](#engineering-results)
+6. [Key Findings](#key-findings)
+7. [How to Use](#how-to-use)
+8. [Repository Structure](#repository-structure)
+9. [What I Personally Built](#what-i-personally-built)
+10. [Detailed Documentation](#detailed-documentation)
+11. [Research Lab](#research-lab)
+12. [References & Acknowledgments](#references--acknowledgments)
+13. [License](#license)
 
 ---
 
-## 1. System Overview
+## Result at a Glance
 
-The task: fly a 6-gate course autonomously, with zero human intervention, from a single
-forward camera. The simulator publishes no position, no velocity and no gate coordinates —
-the only spatial information available is where a gate's colour blob sits in a 320×180
-frame.
-
-![Qualification funnel](docs/img/funnel.png)
-
-| Specification | Value |
+| Metric | Value |
 |---|---|
-| Sensing | Forward FPV camera only (640×360 source, 320×180 to the detector) |
-| Position telemetry | **None** — no GPS, no `LOCAL_POSITION_NED`, no gate coordinates |
-| Control authority | Bank (roll) + thrust. Pitch coasts nose-down at ~−17.8°, uncontrollable |
-| Gate detection | HSV colour-blob centroid → `(u_f, v_f, sz_f)` — no corners, no pose |
-| Control loop | 39–117 Hz observed; all laws written in per-second units because the rate is not constant |
-| Course | 6 gates (START, g1–g4, FINISH), 6 legs, slopes +1.5° to +17.1° |
-| Final campaign | 546 unattended attempts over one night |
-| Outcome | **Did not qualify** — 92% Gate 1, 55% Gate 2, 0% Gate 3 |
+| Final campaign | **546 automated overnight attempts**, 7.0 h, zero operator interventions |
+| Gate 1 passed | **504 / 546 (92.3%)** |
+| Gate 2 passed | **302 / 546 (55.3%)** |
+| Gate 3 registered | **0 / 546** — the binding constraint |
+| Statistical ceiling | 0-for-546 caps per-attempt success below ~0.5% — failure proven systematic |
+| Forensic dataset | 302 full Gate-3-leg tick traces (187k control ticks), replayed offline |
+| Test suite | 424 passed, 114 skipped (`docs/testing.md`) |
+| Automation | Unattended sim lifecycle + race reset + classification + self-purging disk |
 
----
+## The Challenge
 
-## 2. Architecture
+The AI-GP Virtual Qualifier provides a simulated racing drone and a 6-waypoint course (start, four gates, finish). The autonomy contract is deliberately hostile:
 
-Three processes, one direction of authority: the simulator owns race state, the flier owns
-the control loop, the batch runner owns everything the flier cannot see.
+| Constraint | Consequence |
+|---|---|
+| Camera only — no GPS, position, or pose | Whole state estimate = 3 scalars from a blob detector |
+| Thrust ceiling, nose-down coast (~−17.8°, uncontrollable pitch) | **No climb authority** — vertical control is descent management only |
+| Bank ±11° (tighter on the Gate-3 leg) | Every approach is a one-shot ballistic intercept |
+| Gate leaves the camera frame ~2.4 m before its plane | The final ~0.5 s of every approach is flown blind |
+| Host loop rate swung 39–117 Hz | Rate became a first-class experimental variable |
 
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph SIM["AI-GP Simulator"]
+    FPV["FPV camera frame"]
+    RACE["race state / gate registration"]
+    PHYS["flight dynamics"]
+  end
+  subgraph VISION["Vision  (vq1_vision_servo.py)"]
+    HSV["HSV gate mask"] --> BLOB["largest-blob centroid + area"]
+    BLOB --> FILT["low-pass filter -> u_f, v_f, sz_f, du_f"]
+  end
+  subgraph CTRL["Controller  (tools/schedule_flier.py --coast-tube)"]
+    SM["active_gate state machine (6 legs)"]
+    LAT["lateral law: leg bank + post-gate hold + gate-centering servo"]
+    VERT["vertical law: altitude ladder + PD trim + terminal descent + blind hold"]
+    COMMIT["derivative-aware commit latch (close-range servo fade)"]
+    SM --> LAT & VERT
+    COMMIT --> LAT
+  end
+  LOG["tick telemetry (~94 cols CSV)"]
+  FR["flight_report.py verdict + JSON"]
+  BATCH["run_qualifier_batch.ps1 - unattended campaign"]
+  FPV --> HSV
+  FILT --> LAT & VERT & COMMIT
+  RACE --> SM
+  LAT & VERT --> MAV["MAVLink SET_ATTITUDE_TARGET (roll, thrust)"] --> PHYS
+  CTRL --> LOG --> FR --> BATCH
+  BATCH -- "launch / arm-before-GO / keystroke reset" --> SIM
 ```
-┌─────────────────────────────┐        UDP 14560 (MAVLink)       ┌──────────────────────┐
-│  AI-GP Simulator            │ ─────────────────────────────▶   │  schedule_flier.py   │
-│  (DCGame-Win64-Shipping)    │   ATTITUDE / TIMESYNC / race     │  --coast-tube        │
-│                             │                                  │                      │
-│   renders FPV camera        │        UDP 5601 (vision)         │  ┌────────────────┐  │
-│   owns race state           │ ─────────────────────────────▶   │  │ vq1_vision_    │  │
-│                             │      ENCAPSULATED_DATA           │  │ servo detector │  │
-│                             │                                  │  └───────┬────────┘  │
-│                             │   SET_ATTITUDE_TARGET            │          ▼           │
-│                             │ ◀─────────────────────────────   │  control law (bank,  │
-└─────────────────────────────┘     (roll, pitch=free, thrust)   │  thrust) @ loop rate │
-                                                                 └──────────────────────┘
-                    ▲                                                        ▲
-                    │  Esc / ↓ / Enter (SendInput)                           │ launches, watches,
-            ┌───────┴──────────────────────────────────────────────────────┬┘ classifies
-            │              automation/run_qualifier_batch.ps1              │
-            │   sim lifecycle · race reset · best-of-N loop · purge        │
-            └──────────────────────────────┬───────────────────────────────┘
-                                           ▼
-                          analysis/flight_report.py  →  batch_summary.csv + per-run JSON
-```
 
-Full walkthrough, including the constraints that shaped each layer:
-**[docs/architecture.md](docs/architecture.md)**.
+Full description: [docs/architecture.md](docs/architecture.md).
 
----
+## Control Strategy
 
-## 3. Software Map
+A classical, inspectable pipeline chosen over end-to-end learning once the observation contract was clear. Per leg of the course: a scheduled feed-forward bank plus a decaying post-gate hold carries the drone between gates; the vision servo centers the next gate laterally (`k·u_f`, clamped per-leg); the vertical law flies a per-leg descent ladder with PD trim on `v_f`. Near a gate, a **derivative-aware commit latch** (aligned *and* low-rate for a real-time dwell) fades the servo out so terminal parallax spikes cannot throw the approach; on the Gate-3 leg a **terminal descent** plus a **bounded blind hold** carry a controlled sink through the final camera-blind meters. Every mechanism ships as a default-off flag; the frozen qualifier configuration is one exact command ([REPRODUCE.md](results/overnight-2026-08-03/REPRODUCE.md)).
 
-| Component | Path | Role |
-|---|---|---|
-| Flight controller | [`tools/schedule_flier.py`](tools/schedule_flier.py) | The entry point. ~3,900 lines, 158 CLI flags encoding the full experiment history: gate detection → lateral bank servo with a derivative-aware commit latch → vertical trim with terminal descent and a bounded blind hold. |
-| Vision pipeline | [`vq1_vision_servo.py`](vq1_vision_servo.py) | HSV blob gate detector and cyan rail detector → filtered servo signals `(u_f, v_f, sz_f)`. |
-| Batch automation | [`automation/run_qualifier_batch.ps1`](automation/run_qualifier_batch.ps1) | Unattended campaign harness: PID-tracked simulator lifecycle, UDP port-isolation assertions, `SendInput` race resets, arm-before-restart sequencing, per-run classification, self-purging disk management. |
-| Per-run analysis | [`analysis/flight_report.py`](analysis/flight_report.py) | Reduces a ~94-column tick log to a verdict line plus a JSON record — the classification contract the batch runner consumes. |
-| Course geometry | [`analysis/track.py`](analysis/track.py), [`nav_frames.py`](nav_frames.py) | UE → MuJoCo course transform and navigation frames, validated against the extracted course JSON. |
-| Tests | [`tests/`](tests) | 423 passed, 114 skipped. Controller logic, latch behaviour, batch lifecycle, MAVLink compliance, course transforms. |
+Details with equations and verdicts per mechanism: [docs/controller.md](docs/controller.md) · flag reference: [docs/flags.md](docs/flags.md).
 
----
+## Engineering Results
 
-## 4. The Problem
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/funnel_dark.png"><img alt="Qualification funnel" src="docs/img/funnel.png"></picture>
 
-The simulated drone coasts nose-down (~−17.8° pitch, uncontrollable) with a hard thrust
-ceiling that removes climb authority: the controller can steer **bank** and modulate
-**descent** only, from a camera whose gate detector is a colour-blob centroid — no corners,
-no pose. Every gate approach is therefore a one-shot ballistic intercept steered by two
-error scalars, ending with the gate leaving the frame ~2.4 m before the plane and the final
-half-second flown blind. Loop rate on the target hardware swung 39–117 Hz, which became its
-own research problem.
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/crossing_scatter_dark.png"><img alt="Gate-3 crossing scatter" src="docs/img/crossing_scatter.png"></picture>
 
----
+The scatter is the project's decisive figure: 302 Gate-3 approaches form **two disjoint populations** — a fast/straight family (laterally centered, residually high) and a slow/veer family (vertically converged, systematically left) — and **zero registrations across the entire sampled error space**. All figures, both themes: [docs/](docs/).
 
-## 5. Quick Start
+## Key Findings
 
-> The official simulator requires an online account and qualifier access, which **ended at
-> the competition deadline**. The dataset, replay tooling and tests below remain fully
-> reproducible; live flight does not.
+1. **The failure was systematic, not variance.** Crossing positions sampled the whole error plane; none registered. More attempts could not have qualified this controller — proven, not assumed. Notably, the drone was **visually observed to traverse the Gate-3 opening on several runs** (and 53 runs physically struck the gate frame), yet the simulator's registration signal never fired — the registration criterion itself was never characterized and remains an open question ([postmortem](docs/postmortem.md)).
+2. **Two deterministic trajectory populations**, separated at 97.6% by Gate-2→3 transit time alone (3.12 s vs 6.67 s, empty gap between): fast/straight-but-high vs slow/veer-but-level.
+3. **The trajectory fork precedes every controller decision** — populations diverge before commit eligibility, under identical commands; the only measured differential is ~0.5° of roll tracking. The commit latch is a terminal-precision instrument (3× better lateral error when latched), not the fork's cause.
+4. **A replay-validated commit rule improvement** (86:1 confusion across 302 runs) was found offline but never flown — simulator access ended at the deadline.
 
-**1. Install dependencies** (Python 3.11+):
+Full analysis chain: [docs/findings.md](docs/findings.md) · [docs/postmortem.md](docs/postmortem.md).
+
+## How to Use
+
+The analysis pipeline runs **without the simulator** on shipped data — that is the first-class path today, since qualifier access closed at the deadline.
 
 ```bash
+# 1. install
+git clone https://github.com/click-b8/AI-GrandPrix-.git
+cd AI-GrandPrix-
 pip install -r requirements.txt
-```
 
-**2. Run the test suite** — no simulator required:
+# 2. run the per-run analyzer on a shipped trace (top-10 closest approaches included)
+python analysis/flight_report.py results/overnight-2026-08-03/top10_traces/filt_auto_329.csv
 
-```bash
+# 3. aggregate the campaign (546 attempts)
+#    results/overnight-2026-08-03/batch_summary.csv  — one row per attempt; the
+#    546-attempt campaign slice is timestamps 03:30:43..10:28:03 of its 633 rows
+#    results/overnight-2026-08-03/json/              — per-run JSON records
+
+# 4. run the test suite
 python -m pytest tests -q
+
+# 5. full raw dataset (302 Gate-3 traces, 187k ticks) — GitHub Release asset:
+#    vq1-overnight-raw-dataset-2026-08-03.tar.gz
+#    SHA-256: 2957f75dccf5d113e56b752d2be0edc9a8e7f53ce9c80053c7e5a41263d57081
 ```
 
-Expect **423 passed, 114 skipped**. The skips are tests gated on bulk flight logs
-(`archive/tuning-runs/`, ~489 MB) and model checkpoints that are deliberately not tracked.
+Flying the controller required the competition simulator (online account; access ended 2026-08-03). The exact frozen command, environment assumptions, and batch usage are preserved in [REPRODUCE.md](results/overnight-2026-08-03/REPRODUCE.md).
 
-**3. Fly one attempt** — requires the simulator running, logged in, drone at the start gate.
-The exact frozen flag set is documented in
-[REPRODUCE.md](results/overnight-2026-08-03/REPRODUCE.md):
-
-```powershell
-python tools/schedule_flier.py --coast-tube --const-thrust 0.275 `
-  --gate-commit-rate-max 0.13 --gate-commit-stable-s 0.15 `
-  --gate3-vert-descent --gate3-vert-descent-delta 0.015 --gate3-vert-descent-size 0.25 `
-  --gate3-vert-descent-hold-s 0.30 `
-  --no-pitch-hold --tick-log run.csv
-```
-
-**4. Score the run:**
-
-```bash
-python analysis/flight_report.py run.csv            # one-line verdict
-python analysis/flight_report.py run.csv --json -   # machine-readable record
-```
-
-**5. Run an unattended campaign** (Windows, PowerShell 5.1):
-
-```powershell
-.\automation\run_qualifier_batch.ps1 -KeepSimAlive -Mode holdblind -HoldSeconds 0.30
-```
-
----
-
-## 6. Results & Findings
-
-**We did not qualify.** The final overnight campaign ran **546 unattended attempts**:
-
-| Milestone | Rate |
-|---|---|
-| Reached the Gate-1 leg | 100% |
-| Passed Gate 1 | 92% |
-| Passed Gate 2 | 55% |
-| **Registered Gate 3** | **0%** |
-
-What the campaign produced instead is the more interesting artifact: a 302-run forensic
-dataset proving the failures were **systematic, not random**.
-
-![Crossing scatter](docs/img/crossing_scatter.png)
-
-![Duration bimodality](docs/img/duration_bimodal.png)
-
-1. **The Gate-3 miss modes are two deterministic trajectories, not noise.** Leg transit time
-   is perfectly bimodal — 3.12 s vs 6.67 s with an empty gap, 97.6% separable on duration
-   alone. The fast population arrives laterally centred but high; the slow population veers
-   left but vertically centred. Across 302 runs the crossings sampled the entire error space
-   and registered zero — a systematic cause, not variance to be harvested with more attempts.
-2. **The commit latch is a symptom, not the fork.** 67 fast runs never latched yet flew
-   straight; 14 slow runs latched yet veered. The populations diverge in `u_f` *before* the
-   latch is eligible. It still matters as a terminal instrument: latched fast runs crossed at
-   |u_f| 0.088 median versus 0.254 unlatched.
-3. **The dominant latch blocker was structural.** In 43% of runs the arm precondition never
-   occurred. An offline replay across all 302 runs found a strictly dominating rule
-   (size 0.20 / align 0.12 / rate 0.16) — 86:1 confusion, all top-10 runs preserved — that
-   was never flown, because simulator access ended first.
-4. **"Median loop rate selects the miss mode" was a proxy, not a cause** — believed for a
-   day, then falsified by the same dataset that suggested it.
-
-Full analysis: **[docs/findings.md](docs/findings.md)**.
-
----
-
-## 7. Repository Structure
+## Repository Structure
 
 ```
 AI-GrandPrix-/
-├── tools/schedule_flier.py     # flight controller — the entry point (158 flags)
-├── vq1_vision_servo.py         # gate + rail detectors, servo signal filtering
-├── automation/                 # unattended batch harness (lifecycle, resets, classify)
-├── analysis/                   # flight_report.py (verdict + JSON), track.py (geometry)
-├── tests/                      # 537 tests; fixtures/ carries the detector frame
-├── docs/                       # architecture, controller, vision, automation, findings
-│   └── img/                    # figures used by the docs and this README
-├── results/overnight-2026-08-03/
-│   ├── batch_summary.csv       # one row per attempt (546)
-│   ├── json/                   # per-run structured records
-│   ├── top10_traces/           # the ten closest Gate-3 approaches
-│   └── REPRODUCE.md            # frozen flags, environment, analysis pipeline
-├── archive/                    # earlier eras, indexed: RL training, DCL hardware,
-│                               #   tuning runs, abandoned experiments, design specs
-├── config.py                   # camera intrinsics, course constants
-└── course_gates_cm.json        # extracted gate geometry (UE world space, cm)
+├── tools/schedule_flier.py    # THE controller (3.9k lines, --coast-tube mode)
+├── vq1_vision_servo.py        # vision pipeline: HSV blob -> u/v/size servo signals
+├── automation/                # unattended campaign system (sim lifecycle, reset, batch)
+├── analysis/                  # flight_report.py verdict/JSON + trajectory tooling
+├── tests/                     # 538 tests: controller logic, latch, batch, MAVLink
+├── docs/                      # architecture, controller, findings, postmortem, ...
+│   └── img/                   # all figures, light + dark variants
+├── results/
+│   ├── overnight-2026-08-03/  # the final campaign: summary, JSONs, top-10 traces
+│   └── analysis-intermediates/
+└── archive/                   # earlier eras, indexed: RL training, DCL hardware,
+                               # ~560 manual tuning runs, superseded experiments
 ```
 
----
+## What I Personally Built
 
-## 8. Data & Reproducibility
+**Competition-provided:** the simulator (closed binary, not included), its MAVLink/vision UDP interface, and a minimal Python connection example.
 
-The published subset — `batch_summary.csv`, per-run JSON, keepers, the top-10 traces and
-[REPRODUCE.md](results/overnight-2026-08-03/REPRODUCE.md) — is tracked in this repository.
+**Built in this repository:** everything else — the flight controller and its control laws (`tools/schedule_flier.py`), the vision pipeline (`vq1_vision_servo.py`), the telemetry system (~94-column tick logging), the analysis toolchain (`analysis/`), the unattended campaign automation including simulator process management and input injection (`automation/`), the offline replay/forensics methodology (`docs/findings.md`), the test suite, and all documentation and figures.
 
-The **complete raw dataset** (302 Gate-3-leg tick traces, per-run JSON, diagnostics;
-1,310 files) ships as a Release asset rather than a repository blob:
+## Detailed Documentation
 
-- **Release:** [`overnight-2026-08-03`](https://github.com/click-b8/AI-GrandPrix-/releases/tag/overnight-2026-08-03)
-- **Asset:** `vq1-overnight-raw-dataset-2026-08-03.tar.gz` (56,466,296 bytes)
-- **SHA-256:** `2957f75dccf5d113e56b752d2be0edc9a8e7f53ce9c80053c7e5a41263d57081`
+| doc | contents |
+|---|---|
+| [architecture.md](docs/architecture.md) | System layers, constraints, data flow |
+| [controller.md](docs/controller.md) | Every mechanism: law, status (active / experimental / ruled out) |
+| [vision.md](docs/vision.md) | Detector, filtering, measured failure modes |
+| [flags.md](docs/flags.md) | The 152 CLI flags, grouped and triaged |
+| [automation.md](docs/automation.md) | Sim lifecycle, keystroke reset, batch design |
+| [overnight_batch.md](docs/overnight_batch.md) | The 546-attempt campaign |
+| [findings.md](docs/findings.md) | The two-population analysis + commit-latch replay |
+| [postmortem.md](docs/postmortem.md) | Formal engineering postmortem |
+| [experiment-history.md](docs/experiment-history.md) | Controller evolution: problem → hypothesis → change → result → decision |
+| [testing.md](docs/testing.md) | What the 538 tests actually verify |
+| [experiments.md](docs/experiments.md) · [lessons_learned.md](docs/lessons_learned.md) · [future_work.md](docs/future_work.md) | Family verdicts, lessons, next steps |
 
-Verify after download:
+## Research Lab
 
-```bash
-sha256sum -c results/vq1-overnight-raw-dataset-2026-08-03.sha256
-```
+This project is affiliated with the **[SCUBA Lab](https://github.com/scubabot)** (Scaling Collaborative Unmanned roBots for Autonomy) at Florida Atlantic University's SeaTech campus, Dania Beach, FL.
 
-Extract alongside `REPRODUCE.md`, which documents the exact frozen controller flags, the
-batch command, environment assumptions and the analysis pipeline.
+## References & Acknowledgments
 
----
+The **AI Grand Prix** is organized by Anduril Industries in partnership with the Drone Champions League (DCL), Neros Technologies, and JobsOhio; the simulator and course assets are theirs and are not included here. Useful community resources and related work:
 
-## 9. Lessons Learned & Future Work
+- [awesome-autonomous-drone-racing](https://github.com/aimarket/awesome-autonomous-drone-racing) — curated resources for AI-GP, AlphaPilot, A2RL, and Game of Drones
+- Hanover et al., *Autonomous Drone Racing: A Survey*, IEEE T-RO 2024
+- Foehn et al., *AlphaPilot: Autonomous Drone Racing*, RSS 2020 / Auton. Robots 2022
+- Kaufmann et al., *Champion-level Drone Racing using Deep RL* (Swift), Nature 2023 — the RL road considered and deliberately not taken here
+- Madaan et al., *AirSim Drone Racing Lab / NeurIPS Game of Drones*, 2020
+- Jung et al., *Direct Visual Servoing–based Gate Traversal for Drone Racing*, RA-L 2018
 
-- **A proxy that predicts is not a cause.** Loop rate correlated with the miss mode for a
-  full day before the same dataset falsified it. → [docs/lessons_learned.md](docs/lessons_learned.md)
-- **Replay beats flying.** The entire commit-latch investigation and its replacement rule
-  were derived offline from logged state, flying zero additional attempts — which is why the
-  work survived losing simulator access. → [docs/findings.md](docs/findings.md)
-- **Automation is where the experiment actually lives.** More engineering went into making
-  attempts *comparable* — process isolation, deterministic resets, honest classification —
-  than into the control law itself. → [docs/automation.md](docs/automation.md)
-- **The unflown fix.** The dominating commit rule, terminal corner-based pose, and closing
-  the blind final 2.4 m are the three threads that were live at the deadline.
-  → [docs/future_work.md](docs/future_work.md)
+## License
 
----
-
-## 10. Acknowledgments
-
-Built by a one-person team for the AI Grand Prix Virtual Qualifier Round 1
-(July–August 2026).
-
-The AI Grand Prix is organised by **Anduril Industries** in partnership with the
-**Drone Champions League (DCL)** and **Neros Technologies**. The simulator, its assets and
-the course are their property and are **not** included in this repository — only the
-extracted gate coordinates required to reproduce the analysis.
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Noah Brande. The AI-GP simulator, its assets, and competition materials remain the property of their respective owners.

@@ -29,4 +29,6 @@ Every run: tick CSV + console log → `analysis/flight_report.py --json` → one
 
 ## What it achieved
 
-The final overnight run: **546 attempts, 7 hours, zero operator interventions, zero runaway cycles, zero stray processes** — median 44 s per attempt including reset. Every attempt classified, every byte of evidence either kept or accounted for.
+The final overnight run: **546 attempts, 7 hours, zero operator interventions, zero stray processes** — median 44 s per attempt including reset. Every attempt classified, every byte of evidence either kept or accounted for.
+
+One caveat, stated because the data shows it: when the simulator stopped producing flights at ~10:28, the loop did not notice. It cycled for a further two hours recording 35 empty `BROKEN` attempts before being stopped by hand. The sim-death guard covered process death, not a live process that had stopped flying — see [overnight_batch.md](overnight_batch.md).

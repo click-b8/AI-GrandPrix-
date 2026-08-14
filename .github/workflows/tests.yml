@@ -1,0 +1,42 @@
+name: tests
+
+# Runs the pytest suite on every push and pull request to main, plus on demand.
+#
+# Runner choice: windows-latest, not ubuntu. This repository targets Windows +
+# PowerShell 5.1, and 34 of the batch-automation tests are gated on a PowerShell
+# interpreter being present. On a Linux runner those tests would skip silently,
+# so CI would report a smaller, quieter number than the one documented in
+# docs/testing.md. Running on Windows makes CI reproduce the documented count.
+#
+# The suite needs no simulator and no network: tests that depend on the recorded
+# flight-log corpus or the archived policy weights skip themselves with a stated
+# reason (see "Skips, honestly" in docs/testing.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run test suite
+        run: python -m pytest tests -q -rs

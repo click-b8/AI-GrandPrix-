@@ -28,6 +28,10 @@ Population-median tick chains show both populations **identical through t+1.5 s*
 - 67 fast runs never latched and flew the straight transit anyway; 14 slow runs latched and veered anyway. **The latch neither causes nor prevents the fork.**
 - But among fast runs, latched crossings hit |u_f| **0.088** median vs **0.254** unlatched — the latch fades the servo out before a terminal parallax spike (a spurious −9° command in the final 0.3 s) can act. All top-10 closest runs were latched.
 
+<picture><source media="(prefers-color-scheme: dark)" srcset="img/latch_terminal_error_dark.png"><img alt="Terminal lateral error at the Gate-3 crossing: commit-latched runs median 0.088 (p90 0.274, n=70) versus never-latched runs median 0.254 (p90 0.408, n=67)" src="img/latch_terminal_error.png"></picture>
+
+The gap widens in the tail: p90 **0.274** latched vs **0.408** unlatched. So the latch is worth keeping as an *instrument* — it reliably buys a ~3× tighter terminal error on the runs that reach the plane straight — while remaining, per the bullets above, causally irrelevant to which population a run lands in.
+
 ## 4. Latch-failure histogram and the replay-validated rule
 
 Across 299 classifiable runs: **43.1% never armed** (the previous gate's filtered size residual never fell below the 0.16 commit size — a structural blocker), 18.4% never aligned while eligible (the veer's signature), 8.4% rate-broke dwells, 28.1% latched (20.7% genuine, 7.4% questionable). The frozen rule is edge-sitting: p90 of successful dwells reached 0.128 of the 0.13 rate limit and 0.080 of the 0.08 align limit.
