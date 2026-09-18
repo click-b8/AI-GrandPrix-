@@ -4,7 +4,7 @@ Ordered by expected value, all grounded in the overnight dataset. The first two 
 
 ## 1. The pinned-rate A/B (designed, never run)
 
-A closed-loop rate limiter (target a period; sleep only when ahead; never skip control/detector updates; log requested vs actual dt) pinned at ~72 Hz × 3 runs and ~100 Hz × 3 runs, all flight parameters frozen. Classify each run by leg transit time (3.1 s vs 6.7 s — 97.6% separable). Outcome either proves machine rate causes the trajectory fork (→ rate-pinning becomes a flight requirement) or exonerates it (→ the fork seed is in Gate-2-crossing vehicle state, searchable in the kept traces). One evening of flights closes the project's biggest open question.
+A closed-loop rate limiter (target a period; sleep only when ahead; never skip control/detector updates; log requested vs actual dt) pinned at ~72 Hz × 3 runs and ~100 Hz × 3 runs, all flight parameters frozen. Classify each run by leg transit time (3.1 s vs 6.7 s — 97.6% separable). Outcome either proves machine rate causes the trajectory fork (→ rate-pinning becomes a flight requirement) or exonerates it (→ the fork seed is in Gate-2-crossing vehicle state, searchable in the kept traces). One evening of flights closes the project's biggest open question if it were still accessible. 
 
 ## 2. Fly the replay-validated commit rule
 
