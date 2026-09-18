@@ -8,7 +8,7 @@ A vision-only autonomous racing controller for the [Anduril AI Grand Prix](https
 
 <sub>Run `flit56`, 2026-07-30 — the controller flying itself from the start countdown through Gate 1 and Gate 2, then banking onto the Gate-3 leg. The only input is the forward camera; the HUD speed and race clock are the simulator's. Full clip: [`docs/media/gate2_pass.mp4`](docs/media/gate2_pass.mp4).</sub>
 
-**Result up front: VQ1 was not qualified.** Gate 3 was never registered in 546 automated attempts. What this repository documents is the engineering around that fact: a classical vision-servo controller that reliably cleared Gates 1–2, an unattended simulator-campaign system that ran all night without intervention, and a 302-run forensic dataset that located the failure mechanism — systematic, not random.
+** End Result up front: VQ1 was not qualified.** Gate 3 was passed in multiple observed attempts however never registered in 546 automated attempts. What this repository documents is the engineering around that fact: a classical vision-servo controller that reliably cleared Gates 1–2, an unattended simulator-campaign system that ran all night without intervention, and a 302-run forensic dataset that located the failure mechanism — systematic, not random.
 
 ---
 
